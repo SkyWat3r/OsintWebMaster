@@ -1,0 +1,7 @@
+.venv/
+.idea/
+__pycache__/
+*.py[cod]
+
+osm_data.json
+osm_map.html
