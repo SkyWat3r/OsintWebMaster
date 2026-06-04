@@ -304,6 +304,39 @@ WEB_APP_HTML = r"""<!doctype html>
       box-shadow: 0 1px 4px rgba(0,0,0,.35);
       user-select: none;
     }
+    #patternCanvas {
+      width: 100%;
+      height: 230px;
+      display: block;
+      box-sizing: border-box;
+      border: 1px solid #9aa4b2;
+      background: #f9fafb;
+      margin: 8px 0;
+      touch-action: none;
+    }
+    #photoInput {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .section {
+      border-top: 1px solid #ddd;
+      margin-top: 10px;
+      padding-top: 10px;
+    }
+    .result-icon {
+      width: 26px;
+      height: 26px;
+      line-height: 26px;
+      border-radius: 50%;
+      border: 2px solid #111827;
+      color: white;
+      background: #dc2626;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: center;
+      box-shadow: 0 1px 6px rgba(0,0,0,.35);
+      user-select: none;
+    }
   </style>
 </head>
 <body>
@@ -319,6 +352,18 @@ WEB_APP_HTML = r"""<!doctype html>
     </div>
     <div class="stat">Point layers</div>
     <div id="pointFilters"></div>
+    <div class="section">
+      <div class="stat"><strong>Pattern search</strong></div>
+      <input id="photoInput" type="file" accept="image/*">
+      <canvas id="patternCanvas" width="340" height="230"></canvas>
+      <div class="row">
+        <button id="undoPattern">Undo</button>
+        <button id="clearPattern">Clear</button>
+        <button id="searchPattern">Search</button>
+      </div>
+      <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
+      <div id="patternStatus" class="stat">Click points to draw road branches. Click an existing point, then another point, to connect them.</div>
+    </div>
     <div id="details">Click a road, area, or point to inspect tags.</div>
   </div>
 
@@ -337,13 +382,22 @@ WEB_APP_HTML = r"""<!doctype html>
     const roadsEl = document.getElementById('roads');
     const areasEl = document.getElementById('areas');
     const pointFiltersEl = document.getElementById('pointFilters');
+    const patternCanvas = document.getElementById('patternCanvas');
+    const patternCtx = patternCanvas.getContext('2d');
+    const patternStatusEl = document.getElementById('patternStatus');
+    const freeRotationEl = document.getElementById('freeRotation');
 
     const roadsLayer = L.layerGroup().addTo(map);
     const areasLayer = L.layerGroup().addTo(map);
     const pointsLayer = L.layerGroup().addTo(map);
+    const patternResultsLayer = L.layerGroup().addTo(map);
     let payload = null;
     let drawingVersion = 0;
+    let selectedPatternPointId = null;
+    let patternImage = null;
     const enabledPointKinds = new Set();
+    const patternPoints = [];
+    const patternEdges = [];
 
     function matchesFilter(item) {
       const filter = filterEl.value.trim().toLowerCase();
@@ -406,6 +460,159 @@ WEB_APP_HTML = r"""<!doctype html>
       roadsLayer.clearLayers();
       areasLayer.clearLayers();
       pointsLayer.clearLayers();
+    }
+
+    function canvasPoint(event) {
+      const rect = patternCanvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) * (patternCanvas.width / rect.width),
+        y: (event.clientY - rect.top) * (patternCanvas.height / rect.height)
+      };
+    }
+
+    function nearestPatternPoint(point) {
+      let nearest = null;
+      let nearestDistance = 14;
+      for (const existing of patternPoints) {
+        const distance = Math.hypot(existing.x - point.x, existing.y - point.y);
+        if (distance < nearestDistance) {
+          nearest = existing;
+          nearestDistance = distance;
+        }
+      }
+      return nearest;
+    }
+
+    function edgeExists(from, to) {
+      return patternEdges.some((edge) => (edge.from === from && edge.to === to) || (edge.from === to && edge.to === from));
+    }
+
+    function addPatternPoint(point) {
+      const newPoint = { id: `p${Date.now()}${patternPoints.length}`, x: point.x, y: point.y };
+      patternPoints.push(newPoint);
+      if (selectedPatternPointId && selectedPatternPointId !== newPoint.id) {
+        patternEdges.push({ from: selectedPatternPointId, to: newPoint.id });
+      }
+      selectedPatternPointId = newPoint.id;
+      drawPatternCanvas();
+    }
+
+    function selectOrConnectPatternPoint(point) {
+      const existing = nearestPatternPoint(point);
+      if (!existing) {
+        addPatternPoint(point);
+        return;
+      }
+      if (selectedPatternPointId && selectedPatternPointId !== existing.id && !edgeExists(selectedPatternPointId, existing.id)) {
+        patternEdges.push({ from: selectedPatternPointId, to: existing.id });
+      }
+      selectedPatternPointId = existing.id;
+      drawPatternCanvas();
+    }
+
+    function drawPatternCanvas() {
+      patternCtx.clearRect(0, 0, patternCanvas.width, patternCanvas.height);
+      if (patternImage) {
+        const scale = Math.min(patternCanvas.width / patternImage.width, patternCanvas.height / patternImage.height);
+        const width = patternImage.width * scale;
+        const height = patternImage.height * scale;
+        patternCtx.globalAlpha = 0.58;
+        patternCtx.drawImage(patternImage, (patternCanvas.width - width) / 2, (patternCanvas.height - height) / 2, width, height);
+        patternCtx.globalAlpha = 1;
+      }
+      patternCtx.lineWidth = 4;
+      patternCtx.strokeStyle = '#dc2626';
+      patternCtx.lineCap = 'round';
+      const byId = Object.fromEntries(patternPoints.map((point) => [point.id, point]));
+      for (const edge of patternEdges) {
+        const from = byId[edge.from];
+        const to = byId[edge.to];
+        if (!from || !to) continue;
+        patternCtx.beginPath();
+        patternCtx.moveTo(from.x, from.y);
+        patternCtx.lineTo(to.x, to.y);
+        patternCtx.stroke();
+      }
+      for (const point of patternPoints) {
+        patternCtx.beginPath();
+        patternCtx.arc(point.x, point.y, point.id === selectedPatternPointId ? 7 : 5, 0, Math.PI * 2);
+        patternCtx.fillStyle = point.id === selectedPatternPointId ? '#2563eb' : '#111827';
+        patternCtx.fill();
+        patternCtx.strokeStyle = '#fff';
+        patternCtx.lineWidth = 2;
+        patternCtx.stroke();
+      }
+      patternStatusEl.textContent = `${patternPoints.length} points, ${patternEdges.length} segments`;
+    }
+
+    function clearPattern() {
+      patternPoints.length = 0;
+      patternEdges.length = 0;
+      selectedPatternPointId = null;
+      patternResultsLayer.clearLayers();
+      drawPatternCanvas();
+    }
+
+    function undoPattern() {
+      if (patternEdges.length) {
+        patternEdges.pop();
+      } else if (patternPoints.length) {
+        const removed = patternPoints.pop();
+        for (let index = patternEdges.length - 1; index >= 0; index--) {
+          if (patternEdges[index].from === removed.id || patternEdges[index].to === removed.id) {
+            patternEdges.splice(index, 1);
+          }
+        }
+        selectedPatternPointId = patternPoints.length ? patternPoints[patternPoints.length - 1].id : null;
+      }
+      drawPatternCanvas();
+    }
+
+    function showPatternResults(results) {
+      patternResultsLayer.clearLayers();
+      for (const match of results.matches) {
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="result-icon">${escapeHtml(match.score)}</div>`,
+          iconSize: [30, 30],
+          iconAnchor: [15, 15],
+          popupAnchor: [0, -14]
+        });
+        const marker = L.marker(match.coords, { icon }).addTo(patternResultsLayer);
+        marker.bindPopup(
+          `<strong>Pattern match ${escapeHtml(match.score)}%</strong><br>` +
+          `OSM node ${escapeHtml(match.id)}<br>` +
+          `${escapeHtml(match.degree)} branches<br>` +
+          `${escapeHtml(match.roadTypes.join(', ') || 'road')}`
+        );
+      }
+      if (results.matches.length) {
+        map.fitBounds(results.matches.map((match) => match.coords), { padding: [32, 32] });
+      }
+      patternStatusEl.textContent =
+        `${results.matches.length} matches. Pattern: ${results.pattern.degree} branches, angles ${results.pattern.angles.join(', ')}.`;
+    }
+
+    async function searchPattern() {
+      if (patternEdges.length < 2) {
+        patternStatusEl.textContent = 'Draw at least two connected road segments before searching.';
+        return;
+      }
+      patternStatusEl.textContent = 'Searching similar road patterns...';
+      const response = await fetch('/api/pattern-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          points: patternPoints,
+          edges: patternEdges,
+          rotationInvariant: freeRotationEl.checked
+        })
+      });
+      if (!response.ok) {
+        patternStatusEl.textContent = await response.text();
+        return;
+      }
+      showPatternResults(await response.json());
     }
 
     function buildPointFilters() {
@@ -521,9 +728,30 @@ WEB_APP_HTML = r"""<!doctype html>
     }
 
     document.getElementById('fit').addEventListener('click', fitMap);
+    document.getElementById('undoPattern').addEventListener('click', undoPattern);
+    document.getElementById('clearPattern').addEventListener('click', clearPattern);
+    document.getElementById('searchPattern').addEventListener('click', () => {
+      searchPattern().catch((error) => {
+        patternStatusEl.textContent = 'Pattern search failed: ' + error.message;
+      });
+    });
+    document.getElementById('photoInput').addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const image = new Image();
+      image.onload = () => {
+        patternImage = image;
+        drawPatternCanvas();
+      };
+      image.src = URL.createObjectURL(file);
+    });
+    patternCanvas.addEventListener('click', (event) => {
+      selectOrConnectPatternPoint(canvasPoint(event));
+    });
     filterEl.addEventListener('input', redraw);
     roadsEl.addEventListener('change', redraw);
     areasEl.addEventListener('change', redraw);
+    drawPatternCanvas();
 
     loadData().catch((error) => {
       statusEl.textContent = 'Failed to load local API data: ' + error.message;
@@ -584,6 +812,29 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             return
 
         self.send_error_text("Not found", 404)
+
+    def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if path != "/api/pattern-search":
+            self.send_error_text("Not found", 404)
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            request_body = self.rfile.read(content_length)
+            request_json = json.loads(request_body.decode("utf-8"))
+            result = self.app.search_pattern(
+                {
+                    "points": request_json.get("points", []),
+                    "edges": request_json.get("edges", []),
+                },
+                rotation_invariant=bool(request_json.get("rotationInvariant", True)),
+            )
+        except Exception as exc:
+            self.send_error_text(str(exc), 400)
+            return
+
+        self.send_json(result)
 
 
 def find_free_port(host: str, preferred_port: int) -> int:

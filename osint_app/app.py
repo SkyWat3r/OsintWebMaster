@@ -16,6 +16,7 @@ from .config import (
     MAP_FILE,
 )
 from .osm import build_map_payload, element_category, element_details, element_name, fetch_osm_data, load_osm_json
+from .pattern import build_road_pattern_index, search_road_pattern
 from .web import LocalApiHandler, find_free_port, open_browser_url, open_html_file, write_leaflet_map
 
 class OsmInfoApp(tk.Tk):
@@ -27,6 +28,7 @@ class OsmInfoApp(tk.Tk):
 
         self.osm_data: dict = {"elements": []}
         self.map_payload_cache: dict | None = None
+        self.pattern_index_cache: dict | None = None
         self.server: ThreadingHTTPServer | None = None
         self.server_url = ""
         self.elements_by_tree_id: dict[str, dict] = {}
@@ -159,6 +161,13 @@ class OsmInfoApp(tk.Tk):
 
     def invalidate_map_cache(self) -> None:
         self.map_payload_cache = None
+        self.pattern_index_cache = None
+
+    def search_pattern(self, pattern: dict, rotation_invariant: bool = True) -> dict:
+        if self.pattern_index_cache is None:
+            data = self.osm_data if self.osm_data.get("elements") else load_osm_json(DEFAULT_JSON_FILE)
+            self.pattern_index_cache = build_road_pattern_index(data)
+        return search_road_pattern(self.pattern_index_cache, pattern, rotation_invariant=rotation_invariant)
 
     def fetch_data(self) -> None:
         try:
