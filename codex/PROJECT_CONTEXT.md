@@ -28,6 +28,7 @@ Important behavior to preserve:
 - In pattern drawings, two-segment points are bends/tracing points; 3+ segment points are intersections.
 - `Free rotation` compares relative branch angles so the pattern does not need to be north-aligned.
 - The web UI has a `Full map` mode that hides the control panel until the user reopens it.
+- Map road/area/point layers start unchecked; `Check all` and `Uncheck all` toggle them together.
 - The pattern canvas has a `Large drawing` mode for precise tracing without changing stored coordinates.
 
 Known current dataset counts from `osm_data.json`:

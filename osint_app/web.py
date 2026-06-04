@@ -376,8 +376,10 @@ WEB_APP_HTML = r"""<!doctype html>
     <div class="row">
       <button id="fit">Fit</button>
       <button id="focusMap">Full map</button>
-      <label><input id="roads" type="checkbox" checked> Roads</label>
-      <label><input id="areas" type="checkbox" checked> Areas</label>
+      <button id="uncheckAllLayers">Uncheck all</button>
+      <button id="checkAllLayers">Check all</button>
+      <label><input id="roads" type="checkbox"> Roads</label>
+      <label><input id="areas" type="checkbox"> Areas</label>
     </div>
     <div class="stat">Point layers</div>
     <div id="pointFilters"></div>
@@ -668,11 +670,9 @@ WEB_APP_HTML = r"""<!doctype html>
       for (const [kind, meta] of Object.entries(payload.pointKinds || {})) {
         const count = payload.stats.pointKinds[kind] || 0;
         if (!count) continue;
-        const checked = meta.default !== false;
-        if (checked) enabledPointKinds.add(kind);
         const label = document.createElement('label');
         label.title = `${meta.label}: ${count.toLocaleString()} points`;
-        label.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} data-kind="${escapeHtml(kind)}"> `
+        label.innerHTML = `<input type="checkbox" data-kind="${escapeHtml(kind)}"> `
           + `<span style="color:${escapeHtml(meta.color)}; font-weight:700">${escapeHtml(meta.icon)}</span> `
           + `${escapeHtml(meta.label)} (${count.toLocaleString()})`;
         label.querySelector('input').addEventListener('change', (event) => {
@@ -682,6 +682,19 @@ WEB_APP_HTML = r"""<!doctype html>
         });
         pointFiltersEl.appendChild(label);
       }
+    }
+
+    function setAllLayers(checked) {
+      roadsEl.checked = checked;
+      areasEl.checked = checked;
+      enabledPointKinds.clear();
+      for (const input of pointFiltersEl.querySelectorAll('input[data-kind]')) {
+        input.checked = checked;
+        if (checked) {
+          enabledPointKinds.add(input.dataset.kind);
+        }
+      }
+      redraw();
     }
 
     function drawChunk(items, start, batchSize, drawItem, done, version) {
@@ -776,6 +789,8 @@ WEB_APP_HTML = r"""<!doctype html>
 
     document.getElementById('fit').addEventListener('click', fitMap);
     document.getElementById('focusMap').addEventListener('click', () => setMapFocus(true));
+    document.getElementById('uncheckAllLayers').addEventListener('click', () => setAllLayers(false));
+    document.getElementById('checkAllLayers').addEventListener('click', () => setAllLayers(true));
     mapFocusToggleEl.addEventListener('click', () => setMapFocus(!document.body.classList.contains('map-focus')));
     document.getElementById('focusPattern').addEventListener('click', () => {
       setPatternFocus(!document.body.classList.contains('pattern-focus'));
