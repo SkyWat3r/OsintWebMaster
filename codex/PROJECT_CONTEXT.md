@@ -6,7 +6,7 @@ Current architecture:
 - `main.py`: small entrypoint only.
 - `osint_app/app.py`: Tkinter control window, loading/fetching data, local server lifecycle.
 - `osint_app/osm.py`: Overpass query, OSM JSON loading, tag classification, map payload generation.
-- `osint_app/pattern.py`: road graph indexing and drawn-pattern matching.
+- `osint_app/pattern.py`: road graph indexing and drawn road-shape matching.
 - `osint_app/web.py`: localhost HTTP server, embedded Leaflet frontend, browser helpers, HTML export.
 - `osint_app/config.py`: constants, road colors, point-layer definitions.
 
@@ -24,8 +24,10 @@ Important behavior to preserve:
 - The web map must use real OSM tiles through Leaflet.
 - Point filters are classified by OSM tags. Gates are `barrier=gate/lift_gate/swing_gate/...` and use the `▥` symbol.
 - Google Maps links are generated client-side from feature coordinates.
-- Pattern search is a V1 for drawn road/intersection shapes. Photo import is only a drawing background, not automatic image analysis.
+- Pattern search compares drawn road/intersection shapes. Photo import is only a drawing background, not automatic image analysis.
+- In pattern drawings, two-segment points are bends/tracing points; 3+ segment points are intersections.
 - `Free rotation` compares relative branch angles so the pattern does not need to be north-aligned.
+- The web UI has a `Full map` mode that hides the control panel until the user reopens it.
 
 Known current dataset counts from `osm_data.json`:
 - 976,812 OSM elements

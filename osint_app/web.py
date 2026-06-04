@@ -203,6 +203,12 @@ WEB_APP_HTML = r"""<!doctype html>
       font-family: Arial, sans-serif;
       color: #1f2933;
     }
+    #mapFocusToggle {
+      position: absolute;
+      top: 12px;
+      left: 50px;
+      z-index: 1001;
+    }
     #panel {
       position: absolute;
       top: 12px;
@@ -229,6 +235,9 @@ WEB_APP_HTML = r"""<!doctype html>
       border: 1px solid #aaa;
       background: #f8f8f8;
       cursor: pointer;
+    }
+    body.map-focus #panel {
+      display: none;
     }
     input[type="text"] {
       width: 100%;
@@ -341,12 +350,14 @@ WEB_APP_HTML = r"""<!doctype html>
 </head>
 <body>
   <div id="map"></div>
+  <button id="mapFocusToggle">Full map</button>
   <div id="panel">
     <h1>OSM Pattern Explorer</h1>
     <div id="status" class="stat">Loading local API data...</div>
     <input id="filter" type="text" placeholder="Filter names, tags, road types">
     <div class="row">
       <button id="fit">Fit</button>
+      <button id="focusMap">Full map</button>
       <label><input id="roads" type="checkbox" checked> Roads</label>
       <label><input id="areas" type="checkbox" checked> Areas</label>
     </div>
@@ -362,7 +373,7 @@ WEB_APP_HTML = r"""<!doctype html>
         <button id="searchPattern">Search</button>
       </div>
       <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
-      <div id="patternStatus" class="stat">Click points to draw road branches. Click an existing point, then another point, to connect them.</div>
+      <div id="patternStatus" class="stat">Click to trace roads. Two-segment points are treated as bends; 3+ segment points are intersections.</div>
     </div>
     <div id="details">Click a road, area, or point to inspect tags.</div>
   </div>
@@ -386,6 +397,7 @@ WEB_APP_HTML = r"""<!doctype html>
     const patternCtx = patternCanvas.getContext('2d');
     const patternStatusEl = document.getElementById('patternStatus');
     const freeRotationEl = document.getElementById('freeRotation');
+    const mapFocusToggleEl = document.getElementById('mapFocusToggle');
 
     const roadsLayer = L.layerGroup().addTo(map);
     const areasLayer = L.layerGroup().addTo(map);
@@ -590,7 +602,13 @@ WEB_APP_HTML = r"""<!doctype html>
         map.fitBounds(results.matches.map((match) => match.coords), { padding: [32, 32] });
       }
       patternStatusEl.textContent =
-        `${results.matches.length} matches. Pattern: ${results.pattern.degree} branches, angles ${results.pattern.angles.join(', ')}.`;
+        `${results.matches.length} matches. Pattern: ${results.pattern.degree} branches, angles ${results.pattern.angles.join(', ')}, turns ${results.pattern.branchTurns.join(', ')}.`;
+    }
+
+    function setMapFocus(enabled) {
+      document.body.classList.toggle('map-focus', enabled);
+      mapFocusToggleEl.textContent = enabled ? 'Show panel' : 'Full map';
+      setTimeout(() => map.invalidateSize(), 0);
     }
 
     async function searchPattern() {
@@ -728,6 +746,8 @@ WEB_APP_HTML = r"""<!doctype html>
     }
 
     document.getElementById('fit').addEventListener('click', fitMap);
+    document.getElementById('focusMap').addEventListener('click', () => setMapFocus(true));
+    mapFocusToggleEl.addEventListener('click', () => setMapFocus(!document.body.classList.contains('map-focus')));
     document.getElementById('undoPattern').addEventListener('click', undoPattern);
     document.getElementById('clearPattern').addEventListener('click', clearPattern);
     document.getElementById('searchPattern').addEventListener('click', () => {

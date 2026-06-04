@@ -16,10 +16,13 @@ The web map includes a first road-pattern search mode:
 
 - click points in the pattern canvas to draw road branches;
 - click an existing point, then another point, to connect them;
+- use intermediate points to trace bends and curved roads;
 - optionally import a photo as the canvas background and trace the road shape manually;
 - use `Search` to find similar road intersections in the loaded OSM data.
 
-`Free rotation` keeps the search independent from absolute north/south orientation.
+Points with two connected segments are treated as bends. Points with three or more connected segments are treated as intersections. `Free rotation` keeps the search independent from absolute north/south orientation.
+
+Use `Full map` to hide the control panel and inspect the map with the full browser viewport.
 
 ## Data
 
