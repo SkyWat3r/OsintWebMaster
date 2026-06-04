@@ -239,6 +239,21 @@ WEB_APP_HTML = r"""<!doctype html>
     body.map-focus #panel {
       display: none;
     }
+    body.pattern-focus #panel {
+      left: 24px;
+      right: 24px;
+      top: 24px;
+      width: auto;
+      max-height: calc(100% - 48px);
+    }
+    body.pattern-focus #pointFilters,
+    body.pattern-focus #details,
+    body.pattern-focus #filter,
+    body.pattern-focus #status,
+    body.pattern-focus #panel > .row:first-of-type,
+    body.pattern-focus #panel > .stat:nth-of-type(2) {
+      display: none;
+    }
     input[type="text"] {
       width: 100%;
       box-sizing: border-box;
@@ -323,6 +338,9 @@ WEB_APP_HTML = r"""<!doctype html>
       margin: 8px 0;
       touch-action: none;
     }
+    body.pattern-focus #patternCanvas {
+      height: min(68vh, 720px);
+    }
     #photoInput {
       width: 100%;
       box-sizing: border-box;
@@ -371,6 +389,7 @@ WEB_APP_HTML = r"""<!doctype html>
         <button id="undoPattern">Undo</button>
         <button id="clearPattern">Clear</button>
         <button id="searchPattern">Search</button>
+        <button id="focusPattern">Large drawing</button>
       </div>
       <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
       <div id="patternStatus" class="stat">Click to trace roads. Two-segment points are treated as bends; 3+ segment points are intersections.</div>
@@ -606,8 +625,18 @@ WEB_APP_HTML = r"""<!doctype html>
     }
 
     function setMapFocus(enabled) {
+      if (enabled) {
+        setPatternFocus(false);
+      }
       document.body.classList.toggle('map-focus', enabled);
       mapFocusToggleEl.textContent = enabled ? 'Show panel' : 'Full map';
+      setTimeout(() => map.invalidateSize(), 0);
+    }
+
+    function setPatternFocus(enabled) {
+      document.body.classList.toggle('pattern-focus', enabled);
+      document.getElementById('focusPattern').textContent = enabled ? 'Small drawing' : 'Large drawing';
+      drawPatternCanvas();
       setTimeout(() => map.invalidateSize(), 0);
     }
 
@@ -748,6 +777,9 @@ WEB_APP_HTML = r"""<!doctype html>
     document.getElementById('fit').addEventListener('click', fitMap);
     document.getElementById('focusMap').addEventListener('click', () => setMapFocus(true));
     mapFocusToggleEl.addEventListener('click', () => setMapFocus(!document.body.classList.contains('map-focus')));
+    document.getElementById('focusPattern').addEventListener('click', () => {
+      setPatternFocus(!document.body.classList.contains('pattern-focus'));
+    });
     document.getElementById('undoPattern').addEventListener('click', undoPattern);
     document.getElementById('clearPattern').addEventListener('click', clearPattern);
     document.getElementById('searchPattern').addEventListener('click', () => {

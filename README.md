@@ -22,7 +22,7 @@ The web map includes a first road-pattern search mode:
 
 Points with two connected segments are treated as bends. Points with three or more connected segments are treated as intersections. `Free rotation` keeps the search independent from absolute north/south orientation.
 
-Use `Full map` to hide the control panel and inspect the map with the full browser viewport.
+Use `Full map` to hide the control panel and inspect the map with the full browser viewport. Use `Large drawing` to expand the pattern canvas for more precise tracing.
 
 ## Data
 
