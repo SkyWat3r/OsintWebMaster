@@ -14,13 +14,13 @@ The app starts a local server on `127.0.0.1:8765` or the next available port, th
 
 The web map includes a first road-pattern search mode:
 
-- click points in the pattern canvas to draw road branches;
-- click an existing point, then another point, to connect them;
+- drag in the pattern canvas to draw roads like a paint tool;
+- start a stroke on an existing point to connect it to the current drawing;
 - use intermediate points to trace bends and curved roads;
 - optionally import a photo as the canvas background and trace the road shape manually;
 - use `Search` to find similar road intersections in the loaded OSM data.
 
-Points with two connected segments are treated as bends. Points with three or more connected segments are treated as intersections. `Free rotation` keeps the search independent from absolute north/south orientation.
+Continuous road drawings use a stricter `linear-trace` matcher that compares the whole traced shape, limits duplicate nearby results, and returns fewer candidates. Points with two connected segments are treated as bends. Points with three or more connected segments are treated as intersections. `Free rotation` keeps the search independent from absolute north/south orientation.
 
 Map layers start unchecked. Use `Check all` / `Uncheck all` to quickly toggle roads, areas, and point layers. Use `Full map` to hide the control panel and inspect the map with the full browser viewport. Use `Large drawing` to expand the pattern canvas for more precise tracing.
 

@@ -394,7 +394,7 @@ WEB_APP_HTML = r"""<!doctype html>
         <button id="focusPattern">Large drawing</button>
       </div>
       <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
-      <div id="patternStatus" class="stat">Click to trace roads. Two-segment points are treated as bends; 3+ segment points are intersections.</div>
+      <div id="patternStatus" class="stat">Drag to draw roads. Start on an existing point to connect a new stroke.</div>
     </div>
     <div id="details">Click a road, area, or point to inspect tags.</div>
   </div>
@@ -428,6 +428,7 @@ WEB_APP_HTML = r"""<!doctype html>
     let drawingVersion = 0;
     let selectedPatternPointId = null;
     let patternImage = null;
+    let isPaintingPattern = false;
     const enabledPointKinds = new Set();
     const patternPoints = [];
     const patternEdges = [];
@@ -530,6 +531,16 @@ WEB_APP_HTML = r"""<!doctype html>
       drawPatternCanvas();
     }
 
+    function appendPatternStrokePoint(point) {
+      if (selectedPatternPointId) {
+        const selected = patternPoints.find((existing) => existing.id === selectedPatternPointId);
+        if (selected && Math.hypot(selected.x - point.x, selected.y - point.y) < 8) {
+          return;
+        }
+      }
+      addPatternPoint(point);
+    }
+
     function selectOrConnectPatternPoint(point) {
       const existing = nearestPatternPoint(point);
       if (!existing) {
@@ -582,6 +593,7 @@ WEB_APP_HTML = r"""<!doctype html>
       patternPoints.length = 0;
       patternEdges.length = 0;
       selectedPatternPointId = null;
+      isPaintingPattern = false;
       patternResultsLayer.clearLayers();
       drawPatternCanvas();
     }
@@ -640,6 +652,34 @@ WEB_APP_HTML = r"""<!doctype html>
       document.getElementById('focusPattern').textContent = enabled ? 'Small drawing' : 'Large drawing';
       drawPatternCanvas();
       setTimeout(() => map.invalidateSize(), 0);
+    }
+
+    function startPatternPaint(event) {
+      event.preventDefault();
+      const point = canvasPoint(event);
+      const existing = nearestPatternPoint(point);
+      selectedPatternPointId = existing ? existing.id : null;
+      if (!existing) {
+        appendPatternStrokePoint(point);
+      }
+      isPaintingPattern = true;
+      patternCanvas.setPointerCapture(event.pointerId);
+      drawPatternCanvas();
+    }
+
+    function continuePatternPaint(event) {
+      if (!isPaintingPattern) return;
+      event.preventDefault();
+      appendPatternStrokePoint(canvasPoint(event));
+    }
+
+    function stopPatternPaint(event) {
+      if (!isPaintingPattern) return;
+      event.preventDefault();
+      isPaintingPattern = false;
+      if (patternCanvas.hasPointerCapture(event.pointerId)) {
+        patternCanvas.releasePointerCapture(event.pointerId);
+      }
     }
 
     async function searchPattern() {
@@ -812,9 +852,10 @@ WEB_APP_HTML = r"""<!doctype html>
       };
       image.src = URL.createObjectURL(file);
     });
-    patternCanvas.addEventListener('click', (event) => {
-      selectOrConnectPatternPoint(canvasPoint(event));
-    });
+    patternCanvas.addEventListener('pointerdown', startPatternPaint);
+    patternCanvas.addEventListener('pointermove', continuePatternPaint);
+    patternCanvas.addEventListener('pointerup', stopPatternPaint);
+    patternCanvas.addEventListener('pointercancel', stopPatternPaint);
     filterEl.addEventListener('input', redraw);
     roadsEl.addEventListener('change', redraw);
     areasEl.addEventListener('change', redraw);

@@ -25,6 +25,8 @@ Important behavior to preserve:
 - Point filters are classified by OSM tags. Gates are `barrier=gate/lift_gate/swing_gate/...` and use the `▥` symbol.
 - Google Maps links are generated client-side from feature coordinates.
 - Pattern search compares drawn road/intersection shapes. Photo import is only a drawing background, not automatic image analysis.
+- The canvas supports paint-style dragging. Starting a stroke on an existing point connects the new stroke to it.
+- Linear road drawings use a stricter `linear-trace` matcher that compares the whole traced shape and deduplicates nearby results.
 - In pattern drawings, two-segment points are bends/tracing points; 3+ segment points are intersections.
 - `Free rotation` compares relative branch angles so the pattern does not need to be north-aligned.
 - The web UI has a `Full map` mode that hides the control panel until the user reopens it.

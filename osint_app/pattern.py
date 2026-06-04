@@ -4,6 +4,9 @@ from collections import defaultdict
 
 MAX_TRACE_STEPS = 18
 MIN_SCORE = 25
+LINEAR_MIN_SCORE = 60
+LINEAR_SAMPLES = 14
+RESULT_DEDUPE_METERS = 90
 
 
 def _distance_meters(a: list[float], b: list[float]) -> float:
@@ -126,6 +129,80 @@ def _branch_order_distance(pattern: list[dict], candidate: list[dict], rotation_
     return best
 
 
+def _canvas_polyline_angle(a: dict, b: dict) -> float:
+    return _canvas_angle(a, b)
+
+
+def _polyline_parts(points: list, *, geo: bool) -> dict:
+    bearings = []
+    lengths = []
+    for first, second in zip(points, points[1:]):
+        length = _distance_meters(first, second) if geo else _canvas_distance(first, second)
+        if length <= 0:
+            continue
+        bearings.append(_bearing(first, second) if geo else _canvas_polyline_angle(first, second))
+        lengths.append(length)
+
+    total_length = sum(lengths)
+    turns = [
+        (second - first + 180) % 360 - 180
+        for first, second in zip(bearings, bearings[1:])
+    ]
+    return {
+        "bearings": bearings,
+        "lengths": lengths,
+        "totalLength": total_length,
+        "totalTurn": sum(turns),
+    }
+
+
+def _sample_polyline_bearings(parts: dict, rotation_invariant: bool) -> list[float]:
+    bearings = parts["bearings"]
+    lengths = parts["lengths"]
+    total_length = parts["totalLength"]
+    if not bearings or total_length <= 0:
+        return []
+
+    samples = []
+    current_length = 0.0
+    segment_index = 0
+    for sample_index in range(LINEAR_SAMPLES):
+        target = (sample_index / max(1, LINEAR_SAMPLES - 1)) * total_length
+        while segment_index < len(lengths) - 1 and current_length + lengths[segment_index] < target:
+            current_length += lengths[segment_index]
+            segment_index += 1
+        samples.append(bearings[segment_index])
+
+    if rotation_invariant and samples:
+        first = samples[0]
+        samples = [(sample - first) % 360 for sample in samples]
+    return samples
+
+
+def _polyline_distance(pattern_points: list, candidate_points: list, rotation_invariant: bool) -> float:
+    pattern_parts = _polyline_parts(pattern_points, geo=False)
+    if len(pattern_parts["bearings"]) < 2:
+        return 100.0
+
+    best = 100.0
+    for points in (candidate_points, list(reversed(candidate_points))):
+        candidate_parts = _polyline_parts(points, geo=True)
+        if len(candidate_parts["bearings"]) < 2:
+            continue
+        pattern_samples = _sample_polyline_bearings(pattern_parts, rotation_invariant)
+        candidate_samples = _sample_polyline_bearings(candidate_parts, rotation_invariant)
+        if len(pattern_samples) != len(candidate_samples):
+            continue
+        bearing_cost = sum(
+            _angle_delta(pattern_samples[index], candidate_samples[index])
+            for index in range(len(pattern_samples))
+        ) / len(pattern_samples)
+        turn_cost = _angle_delta(pattern_parts["totalTurn"], candidate_parts["totalTurn"]) / 2
+        segment_cost = abs(len(pattern_parts["bearings"]) - len(candidate_parts["bearings"])) * 1.5
+        best = min(best, bearing_cost + turn_cost + segment_cost)
+    return best
+
+
 def build_road_pattern_index(data: dict) -> dict:
     elements = data.get("elements", [])
     nodes = {
@@ -232,6 +309,60 @@ def _pattern_anchor(pattern: dict) -> tuple[dict, list[dict], dict]:
     return by_id[point_id], branches, _degree_groups(linked)
 
 
+def _pattern_graph(pattern: dict) -> tuple[dict, dict]:
+    points = pattern.get("points") or []
+    edges = pattern.get("edges") or []
+    by_id = {point["id"]: point for point in points}
+    linked: dict[str, set[str]] = defaultdict(set)
+    for edge in edges:
+        start = edge.get("from")
+        end = edge.get("to")
+        if start in by_id and end in by_id:
+            linked[start].add(end)
+            linked[end].add(start)
+    return by_id, linked
+
+
+def _linear_pattern_path(pattern: dict) -> list[dict]:
+    by_id, linked = _pattern_graph(pattern)
+    if not linked:
+        return []
+    degrees = [len(neighbors) for neighbors in linked.values()]
+    if any(degree > 2 for degree in degrees):
+        return []
+    endpoints = [point_id for point_id, neighbors in linked.items() if len(neighbors) == 1]
+    if len(endpoints) != 2:
+        return []
+
+    ordered = []
+    previous_id = None
+    current_id = endpoints[0]
+    while current_id is not None:
+        ordered.append(by_id[current_id])
+        next_options = [point_id for point_id in linked[current_id] if point_id != previous_id]
+        previous_id = current_id
+        current_id = next_options[0] if next_options else None
+    return ordered
+
+
+def _candidate_linear_path(item: dict) -> list[list[float]]:
+    if item["degree"] != 2 or len(item["branches"]) != 2:
+        return []
+    first, second = item["branches"]
+    return list(reversed(first["coords"])) + second["coords"][1:]
+
+
+def _dedupe_nearby_matches(matches: list[dict], limit: int) -> list[dict]:
+    kept = []
+    for match in matches:
+        if any(_distance_meters(match["coords"], existing["coords"]) < RESULT_DEDUPE_METERS for existing in kept):
+            continue
+        kept.append(match)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
 def _trace_pattern_branch(start_id: str, next_id: str, points: dict, linked: dict) -> dict:
     previous_id = start_id
     current_id = next_id
@@ -255,7 +386,11 @@ def _trace_pattern_branch(start_id: str, next_id: str, points: dict, linked: dic
     }
 
 
-def search_road_pattern(index: dict, pattern: dict, *, rotation_invariant: bool = True, limit: int = 50) -> dict:
+def search_road_pattern(index: dict, pattern: dict, *, rotation_invariant: bool = True, limit: int = 25) -> dict:
+    linear_path = _linear_pattern_path(pattern)
+    if linear_path:
+        return _search_linear_pattern(index, linear_path, rotation_invariant=rotation_invariant, limit=min(limit, 15))
+
     _center, pattern_branches, pattern_degrees = _pattern_anchor(pattern)
     pattern_angles = [branch["angle"] for branch in pattern_branches]
     pattern_gaps = _relative_gaps(pattern_angles)
@@ -303,5 +438,42 @@ def search_road_pattern(index: dict, pattern: dict, *, rotation_invariant: bool 
             "branchTurns": [round(branch["turn"], 1) for branch in pattern_branches],
             "rotationInvariant": rotation_invariant,
         },
-        "matches": candidates[:limit],
+        "matches": _dedupe_nearby_matches(candidates, limit),
+    }
+
+
+def _search_linear_pattern(index: dict, linear_path: list[dict], *, rotation_invariant: bool, limit: int) -> dict:
+    candidates = []
+    for item in index["intersections"]:
+        candidate_path = _candidate_linear_path(item)
+        if not candidate_path:
+            continue
+
+        shape_penalty = _polyline_distance(linear_path, candidate_path, rotation_invariant)
+        score = max(0.0, 100.0 - shape_penalty)
+        if score < LINEAR_MIN_SCORE:
+            continue
+
+        candidates.append(
+            {
+                "id": item["id"],
+                "coords": item["coords"],
+                "degree": item["degree"],
+                "score": round(score, 1),
+                "roadTypes": item["roadTypes"],
+                "angles": [round(angle, 1) for angle in sorted(item["angles"])],
+                "branchTurns": [round(branch["turn"], 1) for branch in item["branches"]],
+            }
+        )
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "pattern": {
+            "degree": 2,
+            "angles": [],
+            "branchTurns": [],
+            "mode": "linear-trace",
+            "rotationInvariant": rotation_invariant,
+        },
+        "matches": _dedupe_nearby_matches(candidates, limit),
     }
