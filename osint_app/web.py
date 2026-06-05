@@ -341,6 +341,66 @@ WEB_APP_HTML = r"""<!doctype html>
     body.pattern-focus #patternCanvas {
       height: min(68vh, 720px);
     }
+    .pattern-layout {
+      display: block;
+    }
+    body.pattern-focus .pattern-layout {
+      display: grid;
+      grid-template-columns: 310px minmax(360px, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .pattern-results-panel {
+      display: none;
+    }
+    body.pattern-focus .pattern-results-panel,
+    .pattern-results-panel.has-results {
+      display: block;
+    }
+    #patternResults {
+      display: grid;
+      gap: 6px;
+      max-height: 58vh;
+      overflow: auto;
+      margin-top: 8px;
+    }
+    .pattern-result {
+      width: 100%;
+      text-align: left;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      border-radius: 4px;
+      padding: 8px;
+    }
+    .pattern-result.selected {
+      border-color: #2563eb;
+      background: #eff6ff;
+    }
+    .road-group-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px 8px;
+      margin: 8px 0;
+    }
+    #patternMapsBar {
+      position: absolute;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      z-index: 1001;
+      display: none;
+      max-width: min(720px, calc(100% - 28px));
+      box-sizing: border-box;
+      padding: 9px 12px;
+      border: 1px solid #94a3b8;
+      background: rgba(255, 255, 255, 0.97);
+      box-shadow: 0 2px 12px rgba(0,0,0,.18);
+      font-size: 13px;
+    }
+    #patternMapsBar a {
+      color: #1d4ed8;
+      font-weight: 700;
+    }
     #photoInput {
       width: 100%;
       box-sizing: border-box;
@@ -385,19 +445,36 @@ WEB_APP_HTML = r"""<!doctype html>
     <div id="pointFilters"></div>
     <div class="section">
       <div class="stat"><strong>Pattern search</strong></div>
-      <input id="photoInput" type="file" accept="image/*">
-      <canvas id="patternCanvas" width="340" height="230"></canvas>
-      <div class="row">
-        <button id="undoPattern">Undo</button>
-        <button id="clearPattern">Clear</button>
-        <button id="searchPattern">Search</button>
-        <button id="focusPattern">Large drawing</button>
+      <div class="road-group-grid">
+        <label><input type="checkbox" data-road-group="roads" checked> Roads</label>
+        <label><input type="checkbox" data-road-group="highways" checked> Highways</label>
+        <label><input type="checkbox" data-road-group="paths" checked> Paths / tracks</label>
+        <label><input type="checkbox" data-road-group="service" checked> Service roads</label>
       </div>
-      <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
-      <div id="patternStatus" class="stat">Drag to draw roads. Start on an existing point to connect a new stroke.</div>
+      <div class="pattern-layout">
+        <div class="pattern-results-panel" id="patternResultsPanel">
+          <div class="stat"><strong>Best matches</strong></div>
+          <div id="patternResults" class="stat">Launch a search to rank matches.</div>
+        </div>
+        <div class="pattern-drawing-panel">
+          <input id="photoInput" type="file" accept="image/*">
+          <canvas id="patternCanvas"></canvas>
+          <div class="row">
+            <button id="undoPattern">Undo stroke</button>
+            <button id="clearPattern">Clear</button>
+            <button id="searchPattern">Search</button>
+            <button id="focusPattern">Large drawing</button>
+            <button id="finishAngleStroke">Finish line</button>
+          </div>
+          <label><input id="anglePointMode" type="checkbox"> Angle points</label>
+          <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
+          <div id="patternStatus" class="stat">Draw road shapes freely. Add more strokes if the first search is too vague.</div>
+        </div>
+      </div>
     </div>
     <div id="details">Click a road, area, or point to inspect tags.</div>
   </div>
+  <div id="patternMapsBar"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -419,6 +496,11 @@ WEB_APP_HTML = r"""<!doctype html>
     const patternStatusEl = document.getElementById('patternStatus');
     const freeRotationEl = document.getElementById('freeRotation');
     const mapFocusToggleEl = document.getElementById('mapFocusToggle');
+    const patternResultsEl = document.getElementById('patternResults');
+    const patternResultsPanelEl = document.getElementById('patternResultsPanel');
+    const patternMapsBarEl = document.getElementById('patternMapsBar');
+    const anglePointModeEl = document.getElementById('anglePointMode');
+    const roadGroupInputs = Array.from(document.querySelectorAll('input[data-road-group]'));
 
     const roadsLayer = L.layerGroup().addTo(map);
     const areasLayer = L.layerGroup().addTo(map);
@@ -426,12 +508,14 @@ WEB_APP_HTML = r"""<!doctype html>
     const patternResultsLayer = L.layerGroup().addTo(map);
     let payload = null;
     let drawingVersion = 0;
-    let selectedPatternPointId = null;
     let patternImage = null;
     let isPaintingPattern = false;
+    let activePatternStroke = null;
+    let activeAngleStroke = null;
+    let patternMatches = [];
+    let selectedPatternMatchIndex = -1;
     const enabledPointKinds = new Set();
-    const patternPoints = [];
-    const patternEdges = [];
+    const patternStrokes = [];
 
     function matchesFilter(item) {
       const filter = filterEl.value.trim().toLowerCase();
@@ -496,126 +580,176 @@ WEB_APP_HTML = r"""<!doctype html>
       pointsLayer.clearLayers();
     }
 
-    function canvasPoint(event) {
+    function resizePatternCanvas() {
       const rect = patternCanvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(rect.width * ratio));
+      const height = Math.max(1, Math.round(rect.height * ratio));
+      if (patternCanvas.width !== width || patternCanvas.height !== height) {
+        patternCanvas.width = width;
+        patternCanvas.height = height;
+      }
+      patternCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function canvasSize() {
+      const rect = patternCanvas.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    }
+
+    function patternViewport() {
+      const size = canvasSize();
+      const aspect = 340 / 230;
+      let width = size.width;
+      let height = width / aspect;
+      if (height > size.height) {
+        height = size.height;
+        width = height * aspect;
+      }
       return {
-        x: (event.clientX - rect.left) * (patternCanvas.width / rect.width),
-        y: (event.clientY - rect.top) * (patternCanvas.height / rect.height)
+        x: (size.width - width) / 2,
+        y: (size.height - height) / 2,
+        width,
+        height
       };
     }
 
-    function nearestPatternPoint(point) {
-      let nearest = null;
-      let nearestDistance = 14;
-      for (const existing of patternPoints) {
-        const distance = Math.hypot(existing.x - point.x, existing.y - point.y);
-        if (distance < nearestDistance) {
-          nearest = existing;
-          nearestDistance = distance;
-        }
-      }
-      return nearest;
+    function canvasPoint(event) {
+      const rect = patternCanvas.getBoundingClientRect();
+      const viewport = patternViewport();
+      const rawX = event.clientX - rect.left - viewport.x;
+      const rawY = event.clientY - rect.top - viewport.y;
+      return {
+        x: Math.min(1, Math.max(0, rawX / viewport.width)),
+        y: Math.min(1, Math.max(0, rawY / viewport.height))
+      };
     }
 
-    function edgeExists(from, to) {
-      return patternEdges.some((edge) => (edge.from === from && edge.to === to) || (edge.from === to && edge.to === from));
-    }
-
-    function addPatternPoint(point) {
-      const newPoint = { id: `p${Date.now()}${patternPoints.length}`, x: point.x, y: point.y };
-      patternPoints.push(newPoint);
-      if (selectedPatternPointId && selectedPatternPointId !== newPoint.id) {
-        patternEdges.push({ from: selectedPatternPointId, to: newPoint.id });
-      }
-      selectedPatternPointId = newPoint.id;
-      drawPatternCanvas();
-    }
-
-    function appendPatternStrokePoint(point) {
-      if (selectedPatternPointId) {
-        const selected = patternPoints.find((existing) => existing.id === selectedPatternPointId);
-        if (selected && Math.hypot(selected.x - point.x, selected.y - point.y) < 8) {
-          return;
-        }
-      }
-      addPatternPoint(point);
-    }
-
-    function selectOrConnectPatternPoint(point) {
-      const existing = nearestPatternPoint(point);
-      if (!existing) {
-        addPatternPoint(point);
-        return;
-      }
-      if (selectedPatternPointId && selectedPatternPointId !== existing.id && !edgeExists(selectedPatternPointId, existing.id)) {
-        patternEdges.push({ from: selectedPatternPointId, to: existing.id });
-      }
-      selectedPatternPointId = existing.id;
-      drawPatternCanvas();
+    function pointDistancePx(left, right) {
+      const viewport = patternViewport();
+      return Math.hypot((right.x - left.x) * viewport.width, (right.y - left.y) * viewport.height);
     }
 
     function drawPatternCanvas() {
-      patternCtx.clearRect(0, 0, patternCanvas.width, patternCanvas.height);
+      resizePatternCanvas();
+      const size = canvasSize();
+      const viewport = patternViewport();
+      patternCtx.clearRect(0, 0, size.width, size.height);
+      patternCtx.fillStyle = '#f1f5f9';
+      patternCtx.fillRect(0, 0, size.width, size.height);
+      patternCtx.fillStyle = '#f9fafb';
+      patternCtx.fillRect(viewport.x, viewport.y, viewport.width, viewport.height);
       if (patternImage) {
-        const scale = Math.min(patternCanvas.width / patternImage.width, patternCanvas.height / patternImage.height);
+        const scale = Math.min(viewport.width / patternImage.width, viewport.height / patternImage.height);
         const width = patternImage.width * scale;
         const height = patternImage.height * scale;
         patternCtx.globalAlpha = 0.58;
-        patternCtx.drawImage(patternImage, (patternCanvas.width - width) / 2, (patternCanvas.height - height) / 2, width, height);
+        patternCtx.drawImage(
+          patternImage,
+          viewport.x + (viewport.width - width) / 2,
+          viewport.y + (viewport.height - height) / 2,
+          width,
+          height
+        );
         patternCtx.globalAlpha = 1;
       }
       patternCtx.lineWidth = 4;
       patternCtx.strokeStyle = '#dc2626';
       patternCtx.lineCap = 'round';
-      const byId = Object.fromEntries(patternPoints.map((point) => [point.id, point]));
-      for (const edge of patternEdges) {
-        const from = byId[edge.from];
-        const to = byId[edge.to];
-        if (!from || !to) continue;
+      patternCtx.lineJoin = 'round';
+      for (const stroke of patternStrokes) {
+        if (stroke.length < 2) continue;
         patternCtx.beginPath();
-        patternCtx.moveTo(from.x, from.y);
-        patternCtx.lineTo(to.x, to.y);
+        patternCtx.moveTo(viewport.x + stroke[0].x * viewport.width, viewport.y + stroke[0].y * viewport.height);
+        for (const point of stroke.slice(1)) {
+          patternCtx.lineTo(viewport.x + point.x * viewport.width, viewport.y + point.y * viewport.height);
+        }
         patternCtx.stroke();
       }
-      for (const point of patternPoints) {
-        patternCtx.beginPath();
-        patternCtx.arc(point.x, point.y, point.id === selectedPatternPointId ? 7 : 5, 0, Math.PI * 2);
-        patternCtx.fillStyle = point.id === selectedPatternPointId ? '#2563eb' : '#111827';
-        patternCtx.fill();
-        patternCtx.strokeStyle = '#fff';
+      if (anglePointModeEl.checked) {
         patternCtx.lineWidth = 2;
-        patternCtx.stroke();
+        for (const stroke of patternStrokes) {
+          for (const point of stroke) {
+            patternCtx.beginPath();
+            patternCtx.arc(
+              viewport.x + point.x * viewport.width,
+              viewport.y + point.y * viewport.height,
+              stroke === activeAngleStroke ? 5 : 4,
+              0,
+              Math.PI * 2
+            );
+            patternCtx.fillStyle = stroke === activeAngleStroke ? '#2563eb' : '#111827';
+            patternCtx.fill();
+            patternCtx.strokeStyle = '#fff';
+            patternCtx.stroke();
+          }
+        }
       }
-      patternStatusEl.textContent = `${patternPoints.length} points, ${patternEdges.length} segments`;
+      const segments = patternStrokes.reduce((total, stroke) => total + Math.max(0, stroke.length - 1), 0);
+      patternStatusEl.textContent = `${patternStrokes.length} strokes, ${segments} trace segments`;
     }
 
     function clearPattern() {
-      patternPoints.length = 0;
-      patternEdges.length = 0;
-      selectedPatternPointId = null;
+      patternStrokes.length = 0;
+      patternMatches = [];
+      selectedPatternMatchIndex = -1;
       isPaintingPattern = false;
+      activePatternStroke = null;
+      activeAngleStroke = null;
       patternResultsLayer.clearLayers();
+      patternResultsPanelEl.classList.remove('has-results');
+      patternResultsEl.textContent = 'Launch a search to rank matches.';
+      patternMapsBarEl.style.display = 'none';
       drawPatternCanvas();
     }
 
     function undoPattern() {
-      if (patternEdges.length) {
-        patternEdges.pop();
-      } else if (patternPoints.length) {
-        const removed = patternPoints.pop();
-        for (let index = patternEdges.length - 1; index >= 0; index--) {
-          if (patternEdges[index].from === removed.id || patternEdges[index].to === removed.id) {
-            patternEdges.splice(index, 1);
-          }
+      if (anglePointModeEl.checked && activeAngleStroke) {
+        activeAngleStroke.pop();
+        if (!activeAngleStroke.length) {
+          patternStrokes.pop();
+          activeAngleStroke = null;
         }
-        selectedPatternPointId = patternPoints.length ? patternPoints[patternPoints.length - 1].id : null;
+        drawPatternCanvas();
+        return;
+      }
+      if (patternStrokes.length) {
+        patternStrokes.pop();
+      }
+      if (activeAngleStroke && !patternStrokes.includes(activeAngleStroke)) {
+        activeAngleStroke = null;
       }
       drawPatternCanvas();
     }
 
-    function showPatternResults(results) {
+    function finishAngleStroke() {
+      activeAngleStroke = null;
+      drawPatternCanvas();
+    }
+
+    function selectedRoadGroups() {
+      return roadGroupInputs.filter((input) => input.checked).map((input) => input.dataset.roadGroup);
+    }
+
+    function renderPatternResults() {
       patternResultsLayer.clearLayers();
-      for (const match of results.matches) {
+      patternResultsEl.innerHTML = '';
+
+      if (!patternMatches.length) {
+        patternResultsEl.textContent = 'No matches found.';
+        patternMapsBarEl.style.display = 'none';
+        return;
+      }
+
+      patternMatches.forEach((match, index) => {
+        const selected = index === selectedPatternMatchIndex;
+        for (const path of match.paths || []) {
+          L.polyline(path, {
+            color: selected ? '#2563eb' : '#dc2626',
+            weight: selected ? 7 : 3,
+            opacity: selected ? 0.92 : 0.35
+          }).addTo(patternResultsLayer);
+        }
         const icon = L.divIcon({
           className: '',
           html: `<div class="result-icon">${escapeHtml(match.score)}</div>`,
@@ -624,18 +758,61 @@ WEB_APP_HTML = r"""<!doctype html>
           popupAnchor: [0, -14]
         });
         const marker = L.marker(match.coords, { icon }).addTo(patternResultsLayer);
+        marker.on('click', () => selectPatternMatch(index));
         marker.bindPopup(
           `<strong>Pattern match ${escapeHtml(match.score)}%</strong><br>` +
           `OSM node ${escapeHtml(match.id)}<br>` +
           `${escapeHtml(match.degree)} branches<br>` +
           `${escapeHtml(match.roadTypes.join(', ') || 'road')}`
         );
+
+        const button = document.createElement('button');
+        button.className = `pattern-result${selected ? ' selected' : ''}`;
+        button.innerHTML =
+          `<strong>#${index + 1} - ${escapeHtml(match.score)}%</strong><br>` +
+          `${escapeHtml(match.degree)} branches<br>` +
+          `${escapeHtml(match.roadTypes.join(', ') || 'road')}`;
+        button.addEventListener('click', () => selectPatternMatch(index));
+        patternResultsEl.appendChild(button);
+      });
+    }
+
+    function selectPatternMatch(index) {
+      selectedPatternMatchIndex = index;
+      const match = patternMatches[index];
+      if (!match) return;
+      renderPatternResults();
+      const bounds = [];
+      for (const path of match.paths || []) {
+        bounds.push(...path);
       }
-      if (results.matches.length) {
-        map.fitBounds(results.matches.map((match) => match.coords), { padding: [32, 32] });
+      if (bounds.length) {
+        map.fitBounds(bounds, { padding: [42, 42], maxZoom: 18 });
+      } else {
+        map.setView(match.coords, 17);
       }
-      patternStatusEl.textContent =
-        `${results.matches.length} matches. Pattern: ${results.pattern.degree} branches, angles ${results.pattern.angles.join(', ')}, turns ${results.pattern.branchTurns.join(', ')}.`;
+      const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${match.coords[0]},${match.coords[1]}`;
+      patternMapsBarEl.innerHTML =
+        `<strong>Match #${index + 1}: ${escapeHtml(match.score)}%</strong> ` +
+        `${escapeHtml(match.coords[0].toFixed(6))}, ${escapeHtml(match.coords[1].toFixed(6))} - ` +
+        `<a href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a>`;
+      patternMapsBarEl.style.display = 'block';
+    }
+
+    function showPatternResults(results) {
+      patternMatches = results.matches || [];
+      selectedPatternMatchIndex = -1;
+      patternResultsPanelEl.classList.add('has-results');
+      renderPatternResults();
+      if (results.pattern.mode === 'free-trace') {
+        patternStatusEl.textContent = `${results.matches.length} matches. Compared ${results.pattern.degree} drawn stroke(s) as full traces.`;
+      } else {
+        patternStatusEl.textContent =
+          `${results.matches.length} matches. Pattern: ${results.pattern.degree} branches, angles ${results.pattern.angles.join(', ')}, turns ${results.pattern.branchTurns.join(', ')}.`;
+      }
+      if (patternMatches.length) {
+        selectPatternMatch(0);
+      }
     }
 
     function setMapFocus(enabled) {
@@ -650,18 +827,25 @@ WEB_APP_HTML = r"""<!doctype html>
     function setPatternFocus(enabled) {
       document.body.classList.toggle('pattern-focus', enabled);
       document.getElementById('focusPattern').textContent = enabled ? 'Small drawing' : 'Large drawing';
-      drawPatternCanvas();
+      setTimeout(drawPatternCanvas, 0);
       setTimeout(() => map.invalidateSize(), 0);
     }
 
     function startPatternPaint(event) {
       event.preventDefault();
       const point = canvasPoint(event);
-      const existing = nearestPatternPoint(point);
-      selectedPatternPointId = existing ? existing.id : null;
-      if (!existing) {
-        appendPatternStrokePoint(point);
+      if (anglePointModeEl.checked) {
+        if (!activeAngleStroke) {
+          activeAngleStroke = [point];
+          patternStrokes.push(activeAngleStroke);
+        } else if (pointDistancePx(activeAngleStroke[activeAngleStroke.length - 1], point) >= 4) {
+          activeAngleStroke.push(point);
+        }
+        drawPatternCanvas();
+        return;
       }
+      activePatternStroke = [point];
+      patternStrokes.push(activePatternStroke);
       isPaintingPattern = true;
       patternCanvas.setPointerCapture(event.pointerId);
       drawPatternCanvas();
@@ -670,21 +854,34 @@ WEB_APP_HTML = r"""<!doctype html>
     function continuePatternPaint(event) {
       if (!isPaintingPattern) return;
       event.preventDefault();
-      appendPatternStrokePoint(canvasPoint(event));
+      const point = canvasPoint(event);
+      const last = activePatternStroke ? activePatternStroke[activePatternStroke.length - 1] : null;
+      if (!last || pointDistancePx(last, point) >= 8) {
+        if (!activePatternStroke) return;
+        activePatternStroke.push(point);
+        drawPatternCanvas();
+      }
     }
 
     function stopPatternPaint(event) {
       if (!isPaintingPattern) return;
       event.preventDefault();
       isPaintingPattern = false;
+      activePatternStroke = null;
       if (patternCanvas.hasPointerCapture(event.pointerId)) {
         patternCanvas.releasePointerCapture(event.pointerId);
       }
     }
 
     async function searchPattern() {
-      if (patternEdges.length < 2) {
-        patternStatusEl.textContent = 'Draw at least two connected road segments before searching.';
+      const segments = patternStrokes.reduce((total, stroke) => total + Math.max(0, stroke.length - 1), 0);
+      if (segments < 2) {
+        patternStatusEl.textContent = 'Draw at least two road segments before searching.';
+        return;
+      }
+      const roadGroups = selectedRoadGroups();
+      if (!roadGroups.length) {
+        patternStatusEl.textContent = 'Select at least one road type before searching.';
         return;
       }
       patternStatusEl.textContent = 'Searching similar road patterns...';
@@ -692,9 +889,9 @@ WEB_APP_HTML = r"""<!doctype html>
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          points: patternPoints,
-          edges: patternEdges,
-          rotationInvariant: freeRotationEl.checked
+          strokes: patternStrokes,
+          rotationInvariant: freeRotationEl.checked,
+          roadGroups
         })
       });
       if (!response.ok) {
@@ -837,6 +1034,11 @@ WEB_APP_HTML = r"""<!doctype html>
     });
     document.getElementById('undoPattern').addEventListener('click', undoPattern);
     document.getElementById('clearPattern').addEventListener('click', clearPattern);
+    document.getElementById('finishAngleStroke').addEventListener('click', finishAngleStroke);
+    anglePointModeEl.addEventListener('change', () => {
+      activeAngleStroke = null;
+      drawPatternCanvas();
+    });
     document.getElementById('searchPattern').addEventListener('click', () => {
       searchPattern().catch((error) => {
         patternStatusEl.textContent = 'Pattern search failed: ' + error.message;
@@ -856,6 +1058,7 @@ WEB_APP_HTML = r"""<!doctype html>
     patternCanvas.addEventListener('pointermove', continuePatternPaint);
     patternCanvas.addEventListener('pointerup', stopPatternPaint);
     patternCanvas.addEventListener('pointercancel', stopPatternPaint);
+    new ResizeObserver(drawPatternCanvas).observe(patternCanvas);
     filterEl.addEventListener('input', redraw);
     roadsEl.addEventListener('change', redraw);
     areasEl.addEventListener('change', redraw);
@@ -935,8 +1138,10 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                 {
                     "points": request_json.get("points", []),
                     "edges": request_json.get("edges", []),
+                    "strokes": request_json.get("strokes", []),
                 },
                 rotation_invariant=bool(request_json.get("rotationInvariant", True)),
+                allowed_road_groups=request_json.get("roadGroups", []),
             )
         except Exception as exc:
             self.send_error_text(str(exc), 400)

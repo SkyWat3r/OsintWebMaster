@@ -163,11 +163,21 @@ class OsmInfoApp(tk.Tk):
         self.map_payload_cache = None
         self.pattern_index_cache = None
 
-    def search_pattern(self, pattern: dict, rotation_invariant: bool = True) -> dict:
+    def search_pattern(
+        self,
+        pattern: dict,
+        rotation_invariant: bool = True,
+        allowed_road_groups: list[str] | None = None,
+    ) -> dict:
         if self.pattern_index_cache is None:
             data = self.osm_data if self.osm_data.get("elements") else load_osm_json(DEFAULT_JSON_FILE)
             self.pattern_index_cache = build_road_pattern_index(data)
-        return search_road_pattern(self.pattern_index_cache, pattern, rotation_invariant=rotation_invariant)
+        return search_road_pattern(
+            self.pattern_index_cache,
+            pattern,
+            rotation_invariant=rotation_invariant,
+            allowed_road_groups=allowed_road_groups,
+        )
 
     def fetch_data(self) -> None:
         try:

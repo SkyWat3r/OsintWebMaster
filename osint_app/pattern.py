@@ -5,8 +5,28 @@ from collections import defaultdict
 MAX_TRACE_STEPS = 18
 MIN_SCORE = 25
 LINEAR_MIN_SCORE = 60
+FREE_TRACE_MIN_SCORE = 45
 LINEAR_SAMPLES = 14
 RESULT_DEDUPE_METERS = 90
+STROKE_MERGE_DISTANCE = 0.015
+RELATIVE_LENGTH_WEIGHT = 28
+
+ROAD_TYPE_GROUPS = {
+    "roads": {
+        "primary",
+        "primary_link",
+        "secondary",
+        "secondary_link",
+        "tertiary",
+        "tertiary_link",
+        "residential",
+        "unclassified",
+        "living_street",
+    },
+    "highways": {"motorway", "motorway_link", "trunk", "trunk_link"},
+    "paths": {"path", "track", "footway", "cycleway", "bridleway", "pedestrian", "steps"},
+    "service": {"service"},
+}
 
 
 def _distance_meters(a: list[float], b: list[float]) -> float:
@@ -32,6 +52,22 @@ def _canvas_angle(center: dict, point: dict) -> float:
 
 def _canvas_distance(a: dict, b: dict) -> float:
     return math.hypot(b["x"] - a["x"], b["y"] - a["y"])
+
+
+def _road_type_groups(road_types: list[str] | set[str]) -> set[str]:
+    groups = set()
+    for road_type in road_types:
+        for group, values in ROAD_TYPE_GROUPS.items():
+            if road_type in values:
+                groups.add(group)
+    return groups
+
+
+def _candidate_allowed(item: dict, allowed_groups: set[str] | None) -> bool:
+    if not allowed_groups:
+        return True
+    candidate_groups = _road_type_groups(item.get("roadTypes", []))
+    return bool(candidate_groups & allowed_groups)
 
 
 def _angle_delta(a: float, b: float) -> float:
@@ -278,16 +314,7 @@ def _trace_osm_branch(start_id: int, next_id: int, nodes: dict, neighbors: dict)
 
 
 def _pattern_anchor(pattern: dict) -> tuple[dict, list[dict], dict]:
-    points = pattern.get("points") or []
-    edges = pattern.get("edges") or []
-    by_id = {point["id"]: point for point in points}
-    linked: dict[str, set[str]] = defaultdict(set)
-    for edge in edges:
-        start = edge.get("from")
-        end = edge.get("to")
-        if start in by_id and end in by_id:
-            linked[start].add(end)
-            linked[end].add(start)
+    by_id, linked = _pattern_graph(pattern)
 
     anchors = [(len(neighbors), point_id) for point_id, neighbors in linked.items() if len(neighbors) != 2]
     if not anchors:
@@ -309,11 +336,34 @@ def _pattern_anchor(pattern: dict) -> tuple[dict, list[dict], dict]:
     return by_id[point_id], branches, _degree_groups(linked)
 
 
+def _point_key_for_stroke(point: dict, by_id: dict) -> str:
+    for point_id, existing in by_id.items():
+        if _canvas_distance(point, existing) <= STROKE_MERGE_DISTANCE:
+            return point_id
+    point_id = f"p{len(by_id)}"
+    by_id[point_id] = {"id": point_id, "x": point["x"], "y": point["y"]}
+    return point_id
+
+
 def _pattern_graph(pattern: dict) -> tuple[dict, dict]:
     points = pattern.get("points") or []
     edges = pattern.get("edges") or []
     by_id = {point["id"]: point for point in points}
     linked: dict[str, set[str]] = defaultdict(set)
+
+    if not points and pattern.get("strokes"):
+        for stroke in pattern.get("strokes") or []:
+            previous_id = None
+            for raw_point in stroke:
+                if "x" not in raw_point or "y" not in raw_point:
+                    continue
+                point_id = _point_key_for_stroke({"x": raw_point["x"], "y": raw_point["y"]}, by_id)
+                if previous_id and previous_id != point_id:
+                    linked[previous_id].add(point_id)
+                    linked[point_id].add(previous_id)
+                previous_id = point_id
+        return by_id, linked
+
     for edge in edges:
         start = edge.get("from")
         end = edge.get("to")
@@ -352,6 +402,55 @@ def _candidate_linear_path(item: dict) -> list[list[float]]:
     return list(reversed(first["coords"])) + second["coords"][1:]
 
 
+def _candidate_trace_paths(item: dict) -> list[list[list[float]]]:
+    paths = []
+    branches = item.get("branches", [])
+    for branch in branches:
+        if len(branch.get("coords", [])) >= 2:
+            paths.append(branch["coords"])
+
+    for first_index, first in enumerate(branches):
+        for second in branches[first_index + 1:]:
+            if len(first.get("coords", [])) < 2 or len(second.get("coords", [])) < 2:
+                continue
+            paths.append(list(reversed(first["coords"])) + second["coords"][1:])
+    return paths
+
+
+def _stroke_patterns(pattern: dict) -> list[list[dict]]:
+    strokes = []
+    for stroke in pattern.get("strokes") or []:
+        clean = [
+            {"x": float(point["x"]), "y": float(point["y"])}
+            for point in stroke
+            if "x" in point and "y" in point
+        ]
+        if len(clean) >= 2:
+            strokes.append(clean)
+    return strokes
+
+
+def _relative_polyline_lengths(polylines: list, *, geo: bool) -> list[float]:
+    lengths = [_polyline_parts(polyline, geo=geo)["totalLength"] for polyline in polylines]
+    longest = max(lengths, default=0)
+    if longest <= 0:
+        return [1 for _length in lengths]
+    return [length / longest for length in lengths]
+
+
+def _relative_length_penalty(pattern_strokes: list[list[dict]], candidate_paths: list[list[list[float]]]) -> float:
+    if len(pattern_strokes) < 2 or len(pattern_strokes) != len(candidate_paths):
+        return 0.0
+
+    pattern_lengths = _relative_polyline_lengths(pattern_strokes, geo=False)
+    candidate_lengths = _relative_polyline_lengths(candidate_paths, geo=True)
+    return (
+        sum(abs(pattern_lengths[index] - candidate_lengths[index]) for index in range(len(pattern_lengths)))
+        / len(pattern_lengths)
+        * RELATIVE_LENGTH_WEIGHT
+    )
+
+
 def _dedupe_nearby_matches(matches: list[dict], limit: int) -> list[dict]:
     kept = []
     for match in matches:
@@ -386,10 +485,34 @@ def _trace_pattern_branch(start_id: str, next_id: str, points: dict, linked: dic
     }
 
 
-def search_road_pattern(index: dict, pattern: dict, *, rotation_invariant: bool = True, limit: int = 25) -> dict:
+def search_road_pattern(
+    index: dict,
+    pattern: dict,
+    *,
+    rotation_invariant: bool = True,
+    limit: int = 25,
+    allowed_road_groups: list[str] | None = None,
+) -> dict:
+    allowed_groups = set(allowed_road_groups or [])
+    stroke_patterns = _stroke_patterns(pattern)
+    if stroke_patterns:
+        return _search_stroke_patterns(
+            index,
+            stroke_patterns,
+            rotation_invariant=rotation_invariant,
+            limit=limit,
+            allowed_groups=allowed_groups,
+        )
+
     linear_path = _linear_pattern_path(pattern)
     if linear_path:
-        return _search_linear_pattern(index, linear_path, rotation_invariant=rotation_invariant, limit=min(limit, 15))
+        return _search_linear_pattern(
+            index,
+            linear_path,
+            rotation_invariant=rotation_invariant,
+            limit=min(limit, 15),
+            allowed_groups=allowed_groups,
+        )
 
     _center, pattern_branches, pattern_degrees = _pattern_anchor(pattern)
     pattern_angles = [branch["angle"] for branch in pattern_branches]
@@ -398,6 +521,8 @@ def search_road_pattern(index: dict, pattern: dict, *, rotation_invariant: bool 
 
     candidates = []
     for item in index["intersections"]:
+        if not _candidate_allowed(item, allowed_groups):
+            continue
         degree_penalty = abs(item["degree"] - pattern_degree) * 35
         if item["degree"] < pattern_degree:
             degree_penalty += 40
@@ -427,6 +552,7 @@ def search_road_pattern(index: dict, pattern: dict, *, rotation_invariant: bool 
                 "roadTypes": item["roadTypes"],
                 "angles": [round(angle, 1) for angle in sorted(item["angles"])],
                 "branchTurns": [round(branch["turn"], 1) for branch in item["branches"]],
+                "paths": [branch["coords"] for branch in item["branches"]],
             }
         )
 
@@ -442,9 +568,82 @@ def search_road_pattern(index: dict, pattern: dict, *, rotation_invariant: bool 
     }
 
 
-def _search_linear_pattern(index: dict, linear_path: list[dict], *, rotation_invariant: bool, limit: int) -> dict:
+def _search_stroke_patterns(
+    index: dict,
+    stroke_patterns: list[list[dict]],
+    *,
+    rotation_invariant: bool,
+    limit: int,
+    allowed_groups: set[str] | None,
+) -> dict:
     candidates = []
     for item in index["intersections"]:
+        if not _candidate_allowed(item, allowed_groups):
+            continue
+
+        candidate_paths = _candidate_trace_paths(item)
+        if not candidate_paths:
+            continue
+
+        total_penalty = 0.0
+        matched_paths = []
+        for stroke in stroke_patterns:
+            best_path = None
+            best_penalty = 100.0
+            for candidate_path in candidate_paths:
+                penalty = _polyline_distance(stroke, candidate_path, rotation_invariant)
+                if penalty < best_penalty:
+                    best_penalty = penalty
+                    best_path = candidate_path
+            total_penalty += best_penalty
+            if best_path:
+                matched_paths.append(best_path)
+
+        average_penalty = total_penalty / len(stroke_patterns)
+        length_penalty = _relative_length_penalty(stroke_patterns, matched_paths)
+        complexity_penalty = max(0, len(stroke_patterns) - len(matched_paths)) * 15
+        score = max(0.0, 100.0 - average_penalty - length_penalty - complexity_penalty)
+        if score < FREE_TRACE_MIN_SCORE:
+            continue
+
+        candidates.append(
+            {
+                "id": item["id"],
+                "coords": item["coords"],
+                "degree": item["degree"],
+                "score": round(score, 1),
+                "roadTypes": item["roadTypes"],
+                "angles": [round(angle, 1) for angle in sorted(item["angles"])],
+                "branchTurns": [round(branch["turn"], 1) for branch in item["branches"]],
+                "paths": matched_paths,
+            }
+        )
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "pattern": {
+            "degree": len(stroke_patterns),
+            "angles": [],
+            "branchTurns": [],
+            "mode": "free-trace",
+            "rotationInvariant": rotation_invariant,
+        },
+        "matches": _dedupe_nearby_matches(candidates, limit),
+    }
+
+
+def _search_linear_pattern(
+    index: dict,
+    linear_path: list[dict],
+    *,
+    rotation_invariant: bool,
+    limit: int,
+    allowed_groups: set[str] | None,
+) -> dict:
+    candidates = []
+    for item in index["intersections"]:
+        if not _candidate_allowed(item, allowed_groups):
+            continue
         candidate_path = _candidate_linear_path(item)
         if not candidate_path:
             continue
@@ -463,6 +662,7 @@ def _search_linear_pattern(index: dict, linear_path: list[dict], *, rotation_inv
                 "roadTypes": item["roadTypes"],
                 "angles": [round(angle, 1) for angle in sorted(item["angles"])],
                 "branchTurns": [round(branch["turn"], 1) for branch in item["branches"]],
+                "paths": [candidate_path],
             }
         )
 
