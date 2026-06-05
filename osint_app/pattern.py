@@ -11,6 +11,11 @@ LINEAR_SAMPLES = 14
 PATCH_ROTATION_STEP_DEGREES = 90
 PATCH_SAMPLE_POINTS = 24
 PATCH_CANDIDATE_LIMIT = 300
+ROAD_WINDOW_MIN_POINTS = 4
+ROAD_WINDOW_MAX_POINTS = 26
+ROAD_WINDOW_STEP = 3
+ROAD_LAYER_MIN_SCORE = 58
+ROAD_LAYER_CANDIDATE_LIMIT = 1400
 RESULT_DEDUPE_METERS = 90
 STROKE_MERGE_DISTANCE = 0.015
 RELATIVE_LENGTH_WEIGHT = 28
@@ -314,6 +319,46 @@ def _candidate_patch_geometry(item: dict) -> list[list[tuple[float, float]]]:
     return _normalize_xy_polylines(polylines)
 
 
+def _geo_path_patch_geometry(coords: list[list[float]]) -> list[list[tuple[float, float]]]:
+    if len(coords) < 2:
+        return []
+    center = [
+        sum(point[0] for point in coords) / len(coords),
+        sum(point[1] for point in coords) / len(coords),
+    ]
+    return _normalize_xy_polylines([[_geo_to_xy(point, center) for point in coords]])
+
+
+def _path_length_meters(coords: list[list[float]]) -> float:
+    return sum(_distance_meters(first, second) for first, second in zip(coords, coords[1:]))
+
+
+def _road_way_windows(road_way: dict, query_segment_count: int) -> list[list[list[float]]]:
+    coords = road_way.get("coords", [])
+    if len(coords) < 2:
+        return []
+
+    if len(coords) <= ROAD_WINDOW_MAX_POINTS:
+        return [coords]
+
+    preferred = max(ROAD_WINDOW_MIN_POINTS, min(ROAD_WINDOW_MAX_POINTS, query_segment_count + 3))
+    windows = []
+    for start in range(0, max(1, len(coords) - preferred + 1), ROAD_WINDOW_STEP):
+        window = coords[start:start + preferred]
+        if len(window) >= ROAD_WINDOW_MIN_POINTS:
+            windows.append(window)
+    if coords[-preferred:] not in windows:
+        windows.append(coords[-preferred:])
+    return windows
+
+
+def _path_center(coords: list[list[float]]) -> list[float]:
+    return [
+        sum(point[0] for point in coords) / len(coords),
+        sum(point[1] for point in coords) / len(coords),
+    ]
+
+
 def _polyline_length_xy(polyline: list[tuple[float, float]]) -> float:
     return sum(
         math.hypot(second[0] - first[0], second[1] - first[1])
@@ -457,6 +502,7 @@ def build_road_pattern_index(data: dict) -> dict:
     }
     neighbors: dict[int, set[int]] = defaultdict(set)
     road_types: dict[int, set[str]] = defaultdict(set)
+    road_ways = []
 
     for element in elements:
         tags = element.get("tags") or {}
@@ -464,6 +510,16 @@ def build_road_pattern_index(data: dict) -> dict:
             continue
 
         way_nodes = [node_id for node_id in element.get("nodes", []) if node_id in nodes]
+        coords = [nodes[node_id] for node_id in way_nodes]
+        if len(coords) >= 2:
+            road_ways.append(
+                {
+                    "id": element.get("id"),
+                    "coords": coords,
+                    "roadTypes": [tags["highway"]],
+                    "degree": 2,
+                }
+            )
         for first, second in zip(way_nodes, way_nodes[1:]):
             neighbors[first].add(second)
             neighbors[second].add(first)
@@ -492,7 +548,7 @@ def build_road_pattern_index(data: dict) -> dict:
         }
         candidates.append(candidate)
 
-    return {"intersections": candidates}
+    return {"intersections": candidates, "roadWays": road_ways}
 
 
 def _trace_osm_branch(start_id: int, next_id: int, nodes: dict, neighbors: dict) -> dict:
@@ -704,7 +760,7 @@ def search_road_pattern(
     allowed_groups = set(allowed_road_groups or [])
     stroke_patterns = _stroke_patterns(pattern)
     if stroke_patterns:
-        return _search_stroke_patterns(
+        return _search_visible_road_patterns(
             index,
             stroke_patterns,
             rotation_invariant=rotation_invariant,
@@ -770,6 +826,80 @@ def search_road_pattern(
             "degree": pattern_degree,
             "angles": [round(angle, 1) for angle in sorted(pattern_angles)],
             "branchTurns": [round(branch["turn"], 1) for branch in pattern_branches],
+            "rotationInvariant": rotation_invariant,
+        },
+        "matches": _dedupe_nearby_matches(candidates, limit),
+    }
+
+
+def _search_visible_road_patterns(
+    index: dict,
+    stroke_patterns: list[list[dict]],
+    *,
+    rotation_invariant: bool,
+    limit: int,
+    allowed_groups: set[str] | None,
+) -> dict:
+    query_patch = _stroke_patch_geometry(stroke_patterns)
+    if not query_patch:
+        return _search_stroke_patterns(
+            index,
+            stroke_patterns,
+            rotation_invariant=rotation_invariant,
+            limit=limit,
+            allowed_groups=allowed_groups,
+        )
+
+    query_patches = _prepared_query_rotations(query_patch, rotation_invariant)
+    query_segment_count = sum(max(0, len(stroke) - 1) for stroke in stroke_patterns)
+    candidates = []
+    checked = 0
+
+    for road_way in index.get("roadWays", []):
+        if not _candidate_allowed(road_way, allowed_groups):
+            continue
+        for window in _road_way_windows(road_way, query_segment_count):
+            checked += 1
+            if checked > ROAD_LAYER_CANDIDATE_LIMIT:
+                break
+            candidate_patch = _prepared_patch(_geo_path_patch_geometry(window))
+            if not candidate_patch["segments"]:
+                continue
+            patch_penalty = _best_prepared_patch_distance(query_patches, candidate_patch) * 180
+            score = max(0.0, 100.0 - patch_penalty)
+            if score < ROAD_LAYER_MIN_SCORE:
+                continue
+            candidates.append(
+                {
+                    "id": road_way["id"],
+                    "coords": _path_center(window),
+                    "degree": 2,
+                    "score": round(score, 1),
+                    "roadTypes": road_way["roadTypes"],
+                    "angles": [],
+                    "branchTurns": [],
+                    "paths": [window],
+                    "source": "visible-road",
+                }
+            )
+        if checked > ROAD_LAYER_CANDIDATE_LIMIT:
+            break
+
+    fallback = _search_stroke_patterns(
+        index,
+        stroke_patterns,
+        rotation_invariant=rotation_invariant,
+        limit=limit,
+        allowed_groups=allowed_groups,
+    )
+    candidates.extend(fallback["matches"])
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "pattern": {
+            "degree": len(stroke_patterns),
+            "angles": [],
+            "branchTurns": [],
+            "mode": "road-layer-window",
             "rotationInvariant": rotation_invariant,
         },
         "matches": _dedupe_nearby_matches(candidates, limit),
