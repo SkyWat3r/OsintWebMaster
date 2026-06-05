@@ -264,12 +264,10 @@ WEB_APP_HTML = r"""<!doctype html>
       width: auto;
       max-height: calc(100% - 48px);
     }
-    body.pattern-focus #pointFilters,
-    body.pattern-focus #details,
-    body.pattern-focus #filter,
-    body.pattern-focus #status,
-    body.pattern-focus #panel > .row:first-of-type,
-    body.pattern-focus #panel > .stat:nth-of-type(2) {
+    body.pattern-focus #mapToolsSection,
+    body.pattern-focus #filtersSection,
+    body.pattern-focus #detailsSection,
+    body.pattern-focus #status {
       display: none;
     }
     input[type="text"] {
@@ -285,6 +283,43 @@ WEB_APP_HTML = r"""<!doctype html>
       gap: 8px;
       align-items: center;
       margin: 8px 0;
+    }
+    .control-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 8px;
+      margin: 8px 0;
+    }
+    .control-grid label,
+    .tool-row label,
+    .option-row label {
+      display: inline-flex;
+      gap: 5px;
+      align-items: center;
+    }
+    .tool-row,
+    .option-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 8px 0;
+    }
+    .panel-section {
+      border-top: 1px solid #d8dde6;
+      padding-top: 8px;
+      margin-top: 8px;
+    }
+    .panel-section summary {
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+      color: #111827;
+      list-style-position: outside;
+      padding: 4px 0;
+    }
+    .panel-section[open] summary {
+      margin-bottom: 6px;
     }
     .stat {
       font-size: 13px;
@@ -325,13 +360,45 @@ WEB_APP_HTML = r"""<!doctype html>
       overflow: auto;
     }
     #pointFilters {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 5px 8px;
       margin: 8px 0;
       padding: 8px 0;
       border-top: 1px solid #ddd;
       border-bottom: 1px solid #ddd;
+    }
+    .point-filter-group {
+      margin: 6px 0;
+    }
+    .point-filter-group summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      padding: 3px 0;
+    }
+    .point-filter-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px 8px;
+      padding: 5px 0 3px;
+    }
+    .point-filter-options label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+    }
+    .filter-icon,
+    .maki-icon {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      flex: 0 0 16px;
+      background: currentColor;
+      vertical-align: -3px;
+    }
+    .maki-icon {
+      -webkit-mask: var(--maki-url) center / contain no-repeat;
+      mask: var(--maki-url) center / contain no-repeat;
     }
     .poi-icon {
       width: 20px;
@@ -345,6 +412,12 @@ WEB_APP_HTML = r"""<!doctype html>
       text-align: center;
       box-shadow: 0 1px 4px rgba(0,0,0,.35);
       user-select: none;
+    }
+    .poi-icon .maki-icon {
+      width: 13px;
+      height: 13px;
+      margin-top: 3px;
+      color: #fff;
     }
     #patternCanvas {
       width: 100%;
@@ -424,9 +497,7 @@ WEB_APP_HTML = r"""<!doctype html>
       box-sizing: border-box;
     }
     .section {
-      border-top: 1px solid #ddd;
       margin-top: 10px;
-      padding-top: 10px;
     }
     .result-icon {
       width: 26px;
@@ -450,26 +521,36 @@ WEB_APP_HTML = r"""<!doctype html>
   <div id="panel">
     <h1>OSM Pattern Explorer</h1>
     <div id="status" class="stat">Loading local API data...</div>
-    <input id="filter" type="text" placeholder="Filter names, tags, road types">
-    <div class="row">
-      <button id="fit">Fit</button>
-      <button id="focusMap">Full map</button>
-      <button id="toggleMapRotation">Rotate map</button>
-      <button id="uncheckAllLayers">Uncheck all</button>
-      <button id="checkAllLayers">Check all</button>
-      <label><input id="roads" type="checkbox"> Roads</label>
-      <label><input id="areas" type="checkbox"> Areas</label>
+    <details class="panel-section" id="mapToolsSection" open>
+      <summary>Map tools</summary>
+      <div class="tool-row">
+        <button id="fit">Fit</button>
+        <button id="focusMap">Full map</button>
+        <button id="toggleMapRotation">Rotate map</button>
+      </div>
       <div id="mapRotationControls">
         <input id="mapRotation" type="range" min="0" max="359" step="1" value="0">
         <input id="mapRotationNumber" type="number" min="0" max="359" step="1" value="0">
         <label><input id="dragMapRotation" type="checkbox"> Drag rotate</label>
         <button id="resetMapRotation">Reset rotation</button>
       </div>
-    </div>
-    <div class="stat">Point layers</div>
-    <div id="pointFilters"></div>
-    <div class="section">
-      <div class="stat"><strong>Pattern search</strong></div>
+    </details>
+    <details class="panel-section" id="filtersSection" open>
+      <summary>Filters</summary>
+      <input id="filter" type="text" placeholder="Filter names, tags, road types">
+      <div class="tool-row">
+        <button id="uncheckAllLayers">Uncheck all</button>
+        <button id="checkAllLayers">Check all</button>
+      </div>
+      <div class="control-grid">
+        <label><input id="roads" type="checkbox"> Roads</label>
+        <label><input id="areas" type="checkbox"> Areas</label>
+      </div>
+      <div class="stat">Point layers</div>
+      <div id="pointFilters"></div>
+    </details>
+    <details class="panel-section section" id="roadSearchSection" open>
+      <summary>Road search</summary>
       <div class="road-group-grid">
         <label><input type="checkbox" data-road-group="roads" checked> Roads</label>
         <label><input type="checkbox" data-road-group="highways" checked> Highways</label>
@@ -484,31 +565,38 @@ WEB_APP_HTML = r"""<!doctype html>
         <div class="pattern-drawing-panel">
           <input id="photoInput" type="file" accept="image/*">
           <canvas id="patternCanvas"></canvas>
-          <div class="row">
+          <div class="tool-row">
+            <button id="searchPattern">Search</button>
+            <button id="exportPatternSearch">Export search</button>
+            <button id="focusPattern">Large drawing</button>
+            <button id="clearPattern">Clear</button>
+          </div>
+          <div class="tool-row">
             <button id="undoPattern">Undo stroke</button>
+            <button id="finishAngleStroke">Finish line</button>
             <button id="deletePatternPoint">Delete point</button>
             <button id="addPatternMidpoint">Add midpoint</button>
             <button id="smoothPatternStroke">Smooth curve</button>
             <button id="straightPatternStroke">Straight corners</button>
-            <button id="clearPattern">Clear</button>
-            <button id="searchPattern">Search</button>
-            <button id="exportPatternSearch">Export search</button>
-            <button id="focusPattern">Large drawing</button>
-            <button id="finishAngleStroke">Finish line</button>
           </div>
-          <div class="row">
-            <label><input id="devRoadSelect" type="checkbox"> Dev select road</label>
+          <div class="option-row">
+            <label><input id="anglePointMode" type="checkbox"> Angle points</label>
+            <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
+            <label><input id="preciseRotation" type="checkbox"> 10 deg rotation (slow)</label>
+          </div>
+          <div class="tool-row">
             <button id="compareSelectedRoad">Compare selected road</button>
             <button id="exportSelectedRoad">Export selected road</button>
+            <label><input id="devRoadSelect" type="checkbox"> Dev select road</label>
           </div>
-          <label><input id="anglePointMode" type="checkbox"> Angle points</label>
-          <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
-          <label><input id="preciseRotation" type="checkbox"> 10 deg rotation (slow)</label>
           <div id="patternStatus" class="stat">Draw road shapes freely. Add more strokes if the first search is too vague.</div>
         </div>
       </div>
-    </div>
-    <div id="details">Click a road, area, or point to inspect tags.</div>
+    </details>
+    <details class="panel-section" id="detailsSection">
+      <summary>Selection details</summary>
+      <div id="details">Click a road, area, or point to inspect tags.</div>
+    </details>
   </div>
   <div id="patternMapsBar"></div>
 
@@ -653,6 +741,29 @@ WEB_APP_HTML = r"""<!doctype html>
         '"': '&quot;',
         "'": '&#039;'
       })[char]);
+    }
+
+    function makiIconUrl(name) {
+      if (!name) return '';
+      return `https://raw.githubusercontent.com/mapbox/maki/main/icons/${encodeURIComponent(name)}.svg`;
+    }
+
+    function layerIconHtml(meta, className = 'filter-icon') {
+      const color = escapeHtml(meta.color || '#334155');
+      const makiName = meta.maki || meta.iconUrl;
+      const maki = makiName ? makiIconUrl(makiName) : '';
+      if (maki) {
+        return `<span class="${className} maki-icon" style="color:${color}; --maki-url:url('${escapeHtml(maki)}')"></span>`;
+      }
+      return `<span style="color:${color}; font-weight:700">${escapeHtml(meta.icon || '•')}</span>`;
+    }
+
+    function pointMarkerIconHtml(item) {
+      const maki = item.iconUrl ? makiIconUrl(item.iconUrl) : '';
+      if (maki) {
+        return `<span class="maki-icon" style="color:#fff; --maki-url:url('${escapeHtml(maki)}')"></span>`;
+      }
+      return escapeHtml(item.icon || '•');
     }
 
     function clearLayers() {
@@ -1609,20 +1720,43 @@ WEB_APP_HTML = r"""<!doctype html>
     function buildPointFilters() {
       pointFiltersEl.innerHTML = '';
       enabledPointKinds.clear();
+      const groups = {};
       for (const [kind, meta] of Object.entries(payload.pointKinds || {})) {
         const count = payload.stats.pointKinds[kind] || 0;
         if (!count) continue;
-        const label = document.createElement('label');
-        label.title = `${meta.label}: ${count.toLocaleString()} points`;
-        label.innerHTML = `<input type="checkbox" data-kind="${escapeHtml(kind)}"> `
-          + `<span style="color:${escapeHtml(meta.color)}; font-weight:700">${escapeHtml(meta.icon)}</span> `
-          + `${escapeHtml(meta.label)} (${count.toLocaleString()})`;
-        label.querySelector('input').addEventListener('change', (event) => {
-          if (event.target.checked) enabledPointKinds.add(kind);
-          else enabledPointKinds.delete(kind);
-          redraw();
-        });
-        pointFiltersEl.appendChild(label);
+        const group = meta.group || 'Other';
+        if (!groups[group]) {
+          groups[group] = [];
+        }
+        groups[group].push([kind, meta, count]);
+      }
+
+      for (const [group, entries] of Object.entries(groups)) {
+        const section = document.createElement('details');
+        section.className = 'point-filter-group';
+        section.open = group === 'Signs';
+        const total = entries.reduce((sum, entry) => sum + entry[2], 0);
+        const summary = document.createElement('summary');
+        summary.textContent = `${group} (${total.toLocaleString()})`;
+        section.appendChild(summary);
+        const options = document.createElement('div');
+        options.className = 'point-filter-options';
+
+        for (const [kind, meta, count] of entries) {
+          const label = document.createElement('label');
+          label.title = `${meta.label}: ${count.toLocaleString()} points`;
+          label.innerHTML = `<input type="checkbox" data-kind="${escapeHtml(kind)}"> `
+            + layerIconHtml(meta)
+            + `${escapeHtml(meta.label)} (${count.toLocaleString()})`;
+          label.querySelector('input').addEventListener('change', (event) => {
+            if (event.target.checked) enabledPointKinds.add(kind);
+            else enabledPointKinds.delete(kind);
+            redraw();
+          });
+          options.appendChild(label);
+        }
+        section.appendChild(options);
+        pointFiltersEl.appendChild(section);
       }
     }
 
@@ -1691,7 +1825,7 @@ WEB_APP_HTML = r"""<!doctype html>
         }
         const icon = L.divIcon({
           className: '',
-          html: `<div class="poi-icon" style="background:${escapeHtml(item.color || '#ca8a04')}">${escapeHtml(item.icon || '•')}</div>`,
+          html: `<div class="poi-icon" style="background:${escapeHtml(item.color || '#ca8a04')}">${pointMarkerIconHtml(item)}</div>`,
           iconSize: [24, 24],
           iconAnchor: [12, 12],
           popupAnchor: [0, -12]

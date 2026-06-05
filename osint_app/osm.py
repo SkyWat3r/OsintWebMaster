@@ -70,6 +70,22 @@ def element_category(element: dict) -> str:
 
 def point_kind(tags: dict) -> str:
     barrier = tags.get("barrier")
+    if tags.get("highway") == "stop":
+        return "stop"
+    if tags.get("highway") == "give_way":
+        return "give_way"
+    if tags.get("highway") == "crossing":
+        return "crossing"
+    if tags.get("highway") == "traffic_signals":
+        return "traffic_signals"
+    if tags.get("highway") == "turning_circle":
+        return "turning_circle"
+    if tags.get("highway") == "speed_camera" or tags.get("enforcement") in {"maxspeed", "traffic_signals"}:
+        return "speed_camera"
+    if tags.get("traffic_calming"):
+        return "traffic_calming"
+    if tags.get("traffic_sign"):
+        return "traffic_sign"
     if barrier in {"gate", "lift_gate", "swing_gate", "kissing_gate", "sliding_gate"}:
         return "gate"
     if barrier:
@@ -80,18 +96,6 @@ def point_kind(tags: dict) -> str:
         return "parking"
     if tags.get("amenity") in {"restaurant", "cafe", "bar", "fast_food", "pub"}:
         return "food"
-    if tags.get("highway") == "crossing":
-        return "crossing"
-    if tags.get("highway") == "give_way":
-        return "give_way"
-    if tags.get("highway") == "stop":
-        return "stop"
-    if tags.get("highway") == "traffic_signals":
-        return "traffic_signals"
-    if tags.get("highway") == "turning_circle":
-        return "turning_circle"
-    if tags.get("traffic_sign"):
-        return "traffic_sign"
     if tags.get("highway") in {"bus_stop", "platform"} or tags.get("public_transport") or tags.get("railway"):
         return "transport"
     if tags.get("tourism") or tags.get("historic"):
@@ -228,26 +232,24 @@ def build_map_payload(data: dict) -> dict:
             lat_lon = [center["lat"], center["lon"]]
 
         if lat_lon:
-            if len(points) < 10000:
-                kind = point_kind(tags)
-                point_kind_counts[kind] += 1
-                style = POINT_KINDS[kind]
-                points.append(
-                    {
-                        "coords": lat_lon,
-                        "name": element_name(element),
-                        "category": element_category(element),
-                        "kind": kind,
-                        "kindLabel": style["label"],
-                        "icon": style["icon"],
-                        "color": style["color"],
-                        "details": element_details(element),
-                        "popup": popup_html(element),
-                    }
-                )
-                bounds.append(lat_lon)
-            else:
-                skipped["points"] += 1
+            kind = point_kind(tags)
+            point_kind_counts[kind] += 1
+            style = POINT_KINDS[kind]
+            points.append(
+                {
+                    "coords": lat_lon,
+                    "name": element_name(element),
+                    "category": element_category(element),
+                    "kind": kind,
+                    "kindLabel": style["label"],
+                    "icon": style["icon"],
+                    "iconUrl": style.get("maki"),
+                    "color": style["color"],
+                    "details": element_details(element),
+                    "popup": popup_html(element),
+                }
+            )
+            bounds.append(lat_lon)
 
     return {
         "roads": roads,

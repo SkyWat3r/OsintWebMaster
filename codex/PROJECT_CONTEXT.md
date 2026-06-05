@@ -57,6 +57,9 @@ Important behavior to preserve:
 - The web UI has a visual `Rotate map` mode with a 0-359 degree slider, numeric input, and `Drag rotate` toggle. It rotates Leaflet map panes around the center for visual alignment/tracing, but OSM coordinates and backend searches remain unrotated.
 - Map rotation increases tile/canvas render buffer and runs a symmetric overscan pan refresh to reduce blank corners after rotating. It is still a visual Leaflet workaround, not a native rotated-map projection.
 - Rotation must be applied to Leaflet's whole `mapPane` while preserving Leaflet's own translate transform; rotating individual panes made rotation originate from the top-left and caused bad zoom behavior.
+- The main `OSM Pattern Explorer` panel is organized into collapsible sections: `Map tools`, `Filters`, `Road search`, and `Selection details`. Keep future controls inside the relevant section instead of adding loose buttons at the top level.
+- Point filters are grouped by `POINT_KINDS[*].group`; the first dedicated group is `Signs` for stop/give-way/crossing/traffic-sign/traffic-calming style OSM nodes. Filter and marker icons can use Mapbox Maki SVG names via the `maki` field.
+- `build_map_payload()` no longer has the old 10000 point cap; do not reintroduce arbitrary point skipping without a measured performance reason.
 - Map road/area/point layers start unchecked; `Check all` and `Uncheck all` toggle them together.
 - The pattern canvas has a `Large drawing` mode for precise tracing without changing stored coordinates.
 
