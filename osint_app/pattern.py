@@ -9,13 +9,18 @@ FREE_TRACE_MIN_SCORE = 45
 PATCH_TRACE_MIN_SCORE = 55
 LINEAR_SAMPLES = 14
 PATCH_ROTATION_STEP_DEGREES = 90
-PATCH_SAMPLE_POINTS = 24
+PATCH_SAMPLE_POINTS = 12
 PATCH_CANDIDATE_LIMIT = 300
 ROAD_WINDOW_MIN_POINTS = 4
 ROAD_WINDOW_MAX_POINTS = 26
 ROAD_WINDOW_STEP = 3
 ROAD_LAYER_MIN_SCORE = 58
 ROAD_LAYER_CANDIDATE_LIMIT = 1400
+ROAD_WINDOW_SOFT_MAX_METERS = 350
+ROAD_WINDOW_SOFT_MIN_METERS = 100
+ROAD_WINDOW_LENGTH_PENALTY_DIVISOR = 35
+ROAD_WINDOW_SHORT_PENALTY_DIVISOR = 25
+NETWORK_PATCH_FALLBACK_PENALTY = 6
 RESULT_DEDUPE_METERS = 90
 STROKE_MERGE_DISTANCE = 0.015
 RELATIVE_LENGTH_WEIGHT = 28
@@ -288,6 +293,22 @@ def _stroke_overall_angles(strokes: list[list[dict]]) -> list[float]:
         for stroke in strokes
         if len(stroke) >= 2
     ]
+
+
+def _stroke_total_turns(strokes: list[list[dict]]) -> list[float]:
+    return [_polyline_parts(stroke, geo=False)["totalTurn"] for stroke in strokes if len(stroke) >= 2]
+
+
+def _road_way_priority(road_way: dict, query_turns: list[float]) -> float:
+    coords = road_way.get("coords", [])
+    if len(coords) < 2:
+        return 999.0
+    road_turn = _polyline_parts(coords, geo=True)["totalTurn"]
+    if not query_turns:
+        return abs(road_turn)
+    turn_cost = min(_angle_delta(query_turn, road_turn) for query_turn in query_turns)
+    point_cost = max(0, len(coords) - ROAD_WINDOW_MAX_POINTS) * 0.15
+    return turn_cost + point_cost
 
 
 def _cheap_stroke_candidate_priority(stroke_angles: list[float], item: dict, rotation_invariant: bool) -> float:
@@ -717,10 +738,17 @@ def _relative_length_penalty(pattern_strokes: list[list[dict]], candidate_paths:
 
 def _dedupe_nearby_matches(matches: list[dict], limit: int) -> list[dict]:
     kept = []
+    kept_visible_road_ids = set()
     for match in matches:
+        if match.get("source") == "visible-road":
+            road_id = match.get("id")
+            if road_id in kept_visible_road_ids:
+                continue
         if any(_distance_meters(match["coords"], existing["coords"]) < RESULT_DEDUPE_METERS for existing in kept):
             continue
         kept.append(match)
+        if match.get("source") == "visible-road":
+            kept_visible_road_ids.add(match.get("id"))
         if len(kept) >= limit:
             break
     return kept
@@ -852,12 +880,14 @@ def _search_visible_road_patterns(
 
     query_patches = _prepared_query_rotations(query_patch, rotation_invariant)
     query_segment_count = sum(max(0, len(stroke) - 1) for stroke in stroke_patterns)
+    query_turns = _stroke_total_turns(stroke_patterns)
     candidates = []
     checked = 0
 
-    for road_way in index.get("roadWays", []):
-        if not _candidate_allowed(road_way, allowed_groups):
-            continue
+    road_ways = [road_way for road_way in index.get("roadWays", []) if _candidate_allowed(road_way, allowed_groups)]
+    road_ways.sort(key=lambda road_way: _road_way_priority(road_way, query_turns))
+
+    for road_way in road_ways:
         for window in _road_way_windows(road_way, query_segment_count):
             checked += 1
             if checked > ROAD_LAYER_CANDIDATE_LIMIT:
@@ -866,7 +896,10 @@ def _search_visible_road_patterns(
             if not candidate_patch["segments"]:
                 continue
             patch_penalty = _best_prepared_patch_distance(query_patches, candidate_patch) * 180
-            score = max(0.0, 100.0 - patch_penalty)
+            path_length = _path_length_meters(window)
+            length_penalty = max(0.0, path_length - ROAD_WINDOW_SOFT_MAX_METERS) / ROAD_WINDOW_LENGTH_PENALTY_DIVISOR
+            short_length_penalty = max(0.0, ROAD_WINDOW_SOFT_MIN_METERS - path_length) / ROAD_WINDOW_SHORT_PENALTY_DIVISOR
+            score = max(0.0, 100.0 - patch_penalty - length_penalty - short_length_penalty)
             if score < ROAD_LAYER_MIN_SCORE:
                 continue
             candidates.append(
@@ -882,7 +915,9 @@ def _search_visible_road_patterns(
                     "source": "visible-road",
                     "metrics": {
                         "patchPenalty": round(patch_penalty, 3),
-                        "pathLengthMeters": round(_path_length_meters(window), 1),
+                        "lengthPenalty": round(length_penalty, 3),
+                        "shortLengthPenalty": round(short_length_penalty, 3),
+                        "pathLengthMeters": round(path_length, 1),
                         "windowPoints": len(window),
                         "querySegments": query_segment_count,
                         "matcher": "road-layer-window",
@@ -892,14 +927,18 @@ def _search_visible_road_patterns(
         if checked > ROAD_LAYER_CANDIDATE_LIMIT:
             break
 
-    fallback = _search_stroke_patterns(
-        index,
-        stroke_patterns,
-        rotation_invariant=rotation_invariant,
-        limit=limit,
-        allowed_groups=allowed_groups,
-    )
-    candidates.extend(fallback["matches"])
+    if len(candidates) < max(4, limit // 3):
+        fallback = _search_stroke_patterns(
+            index,
+            stroke_patterns,
+            rotation_invariant=rotation_invariant,
+            limit=limit,
+            allowed_groups=allowed_groups,
+        )
+        for match in fallback["matches"]:
+            match["score"] = round(max(0.0, match["score"] - NETWORK_PATCH_FALLBACK_PENALTY), 1)
+            match.setdefault("metrics", {})["fallbackPenalty"] = NETWORK_PATCH_FALLBACK_PENALTY
+        candidates.extend(fallback["matches"])
     candidates.sort(key=lambda item: item["score"], reverse=True)
     return {
         "pattern": {

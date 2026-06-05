@@ -5,3 +5,4 @@ __pycache__/
 
 osm_data.json
 osm_map.html
+tests/

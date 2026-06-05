@@ -43,6 +43,9 @@ Important behavior to preserve:
   - intersection/branch matching: fallback for old graph-style drawings.
 - `road-layer-window` results have `source: visible-road` and their `paths` are actual OSM road-line windows that can be highlighted on the map.
 - `road-layer-window` metrics include `patchPenalty`, `pathLengthMeters`, `windowPoints`, `querySegments`, and `matcher`.
+- Calibration exports are kept locally under `tests/` and ignored by Git. Filenames can indicate the correct result rank, e.g. `number5.json`; `not_found.json` means the correct route was absent from the ranked list.
+- Calibration from `tests/number5.json` and `tests/numer12.json` added visible-road result dedupe by OSM way id, long/short window length penalties, cheaper sampling, and reduced fallback priority.
+- Measured calibration result after this pass: `number5` correct match moved from rank 5 to rank 3; `numer12` moved from rank 12 to rank 9; `not_found` remained not found.
 - `network-patch` metrics include `patchPenalty`, `strokeCountPenalty`, `candidateDegree`, and `matcher`.
 - `network-patch` normalizes query and candidate patches by translation/scale, tests coarse rotations when `Free rotation` is enabled, then scores with bidirectional nearest-segment distance.
 - Patch search is prefiltered by road group, branch count, and coarse stroke/candidate angles before running the heavier geometric score.
