@@ -27,6 +27,7 @@ Important behavior to preserve:
 - Pattern search compares drawn road shapes. Photo import is only a drawing background, not automatic image analysis.
 - The canvas supports freehand drawing and an `Angle points` mode similar to a pen/polyline tool.
 - `Angle points` lets the user click route vertices manually, then `Finish line` starts a separate stroke.
+- In `Angle points`, existing vertices can be selected/dragged, `Delete point` removes the selected vertex, and the status text shows adjacent segment length percentages and angles.
 - The UI no longer shows old black graph points during normal freehand drawing. Points still exist internally to encode strokes.
 - The pattern canvas stores normalized coordinates and uses a fixed internal 340:230 drawing viewport, so `Large drawing` should not stretch the trace.
 - `/api/pattern-search` accepts `strokes`, `roadGroups`, and `rotationInvariant`.

@@ -17,6 +17,7 @@ The web map includes a first road-pattern search mode:
 - drag in the pattern canvas to draw roads like a paint tool;
 - start a stroke on an existing point to connect it to the current drawing;
 - use intermediate points to trace bends and curved roads;
+- use `Angle points` for cleaner polylines, then drag vertices to adjust them or `Delete point` to remove a selected vertex;
 - optionally import a photo as the canvas background and trace the road shape manually;
 - use `Search` to find similar road intersections in the loaded OSM data.
 

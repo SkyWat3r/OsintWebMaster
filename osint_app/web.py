@@ -461,6 +461,7 @@ WEB_APP_HTML = r"""<!doctype html>
           <canvas id="patternCanvas"></canvas>
           <div class="row">
             <button id="undoPattern">Undo stroke</button>
+            <button id="deletePatternPoint">Delete point</button>
             <button id="clearPattern">Clear</button>
             <button id="searchPattern">Search</button>
             <button id="focusPattern">Large drawing</button>
@@ -512,6 +513,8 @@ WEB_APP_HTML = r"""<!doctype html>
     let isPaintingPattern = false;
     let activePatternStroke = null;
     let activeAngleStroke = null;
+    let selectedPatternPoint = null;
+    let draggedPatternPoint = null;
     let patternMatches = [];
     let selectedPatternMatchIndex = -1;
     const enabledPointKinds = new Set();
@@ -630,6 +633,52 @@ WEB_APP_HTML = r"""<!doctype html>
       return Math.hypot((right.x - left.x) * viewport.width, (right.y - left.y) * viewport.height);
     }
 
+    function nearestPatternPoint(point, maxDistancePx = 12) {
+      let nearest = null;
+      let nearestDistance = maxDistancePx;
+      for (const stroke of patternStrokes) {
+        for (let index = 0; index < stroke.length; index++) {
+          const distance = pointDistancePx(point, stroke[index]);
+          if (distance <= nearestDistance) {
+            nearest = { stroke, index, point: stroke[index] };
+            nearestDistance = distance;
+          }
+        }
+      }
+      return nearest;
+    }
+
+    function selectedPointMatches(stroke, index) {
+      return selectedPatternPoint && selectedPatternPoint.stroke === stroke && selectedPatternPoint.index === index;
+    }
+
+    function segmentLengthPercent(first, second) {
+      return Math.round(Math.hypot(second.x - first.x, second.y - first.y) * 100);
+    }
+
+    function segmentAngle(first, second) {
+      const degrees = Math.atan2(first.y - second.y, second.x - first.x) * 180 / Math.PI;
+      return Math.round((degrees + 360) % 360);
+    }
+
+    function selectedPointSummary() {
+      if (!selectedPatternPoint) return '';
+      const stroke = selectedPatternPoint.stroke;
+      const index = selectedPatternPoint.index;
+      const parts = [`point ${index + 1}/${stroke.length}`];
+      if (index > 0) {
+        const previous = stroke[index - 1];
+        const current = stroke[index];
+        parts.push(`prev ${segmentLengthPercent(previous, current)}%, ${segmentAngle(previous, current)}deg`);
+      }
+      if (index < stroke.length - 1) {
+        const current = stroke[index];
+        const next = stroke[index + 1];
+        parts.push(`next ${segmentLengthPercent(current, next)}%, ${segmentAngle(current, next)}deg`);
+      }
+      return parts.join(' | ');
+    }
+
     function drawPatternCanvas() {
       resizePatternCanvas();
       const size = canvasSize();
@@ -669,16 +718,18 @@ WEB_APP_HTML = r"""<!doctype html>
       if (anglePointModeEl.checked) {
         patternCtx.lineWidth = 2;
         for (const stroke of patternStrokes) {
-          for (const point of stroke) {
+          for (let index = 0; index < stroke.length; index++) {
+            const point = stroke[index];
+            const selected = selectedPointMatches(stroke, index);
             patternCtx.beginPath();
             patternCtx.arc(
               viewport.x + point.x * viewport.width,
               viewport.y + point.y * viewport.height,
-              stroke === activeAngleStroke ? 5 : 4,
+              selected ? 8 : (stroke === activeAngleStroke ? 5 : 4),
               0,
               Math.PI * 2
             );
-            patternCtx.fillStyle = stroke === activeAngleStroke ? '#2563eb' : '#111827';
+            patternCtx.fillStyle = selected ? '#f97316' : (stroke === activeAngleStroke ? '#2563eb' : '#111827');
             patternCtx.fill();
             patternCtx.strokeStyle = '#fff';
             patternCtx.stroke();
@@ -686,7 +737,8 @@ WEB_APP_HTML = r"""<!doctype html>
         }
       }
       const segments = patternStrokes.reduce((total, stroke) => total + Math.max(0, stroke.length - 1), 0);
-      patternStatusEl.textContent = `${patternStrokes.length} strokes, ${segments} trace segments`;
+      const selection = selectedPointSummary();
+      patternStatusEl.textContent = `${patternStrokes.length} strokes, ${segments} trace segments${selection ? ` | ${selection}` : ''}`;
     }
 
     function clearPattern() {
@@ -696,6 +748,8 @@ WEB_APP_HTML = r"""<!doctype html>
       isPaintingPattern = false;
       activePatternStroke = null;
       activeAngleStroke = null;
+      selectedPatternPoint = null;
+      draggedPatternPoint = null;
       patternResultsLayer.clearLayers();
       patternResultsPanelEl.classList.remove('has-results');
       patternResultsEl.textContent = 'Launch a search to rank matches.';
@@ -719,6 +773,28 @@ WEB_APP_HTML = r"""<!doctype html>
       if (activeAngleStroke && !patternStrokes.includes(activeAngleStroke)) {
         activeAngleStroke = null;
       }
+      selectedPatternPoint = null;
+      drawPatternCanvas();
+    }
+
+    function deleteSelectedPatternPoint() {
+      if (!selectedPatternPoint) {
+        patternStatusEl.textContent = 'Select a point in Angle points mode before deleting.';
+        return;
+      }
+      const stroke = selectedPatternPoint.stroke;
+      stroke.splice(selectedPatternPoint.index, 1);
+      if (stroke.length < 2) {
+        const strokeIndex = patternStrokes.indexOf(stroke);
+        if (strokeIndex >= 0) {
+          patternStrokes.splice(strokeIndex, 1);
+        }
+      }
+      if (activeAngleStroke === stroke && !patternStrokes.includes(stroke)) {
+        activeAngleStroke = null;
+      }
+      selectedPatternPoint = null;
+      draggedPatternPoint = null;
       drawPatternCanvas();
     }
 
@@ -837,11 +913,25 @@ WEB_APP_HTML = r"""<!doctype html>
       event.preventDefault();
       const point = canvasPoint(event);
       if (anglePointModeEl.checked) {
+        const existing = nearestPatternPoint(point);
+        if (existing) {
+          selectedPatternPoint = existing;
+          draggedPatternPoint = existing;
+          activeAngleStroke = existing.stroke;
+          patternCanvas.setPointerCapture(event.pointerId);
+          drawPatternCanvas();
+          return;
+        }
         if (!activeAngleStroke) {
           activeAngleStroke = [point];
           patternStrokes.push(activeAngleStroke);
         } else if (pointDistancePx(activeAngleStroke[activeAngleStroke.length - 1], point) >= 4) {
           activeAngleStroke.push(point);
+          selectedPatternPoint = {
+            stroke: activeAngleStroke,
+            index: activeAngleStroke.length - 1,
+            point: activeAngleStroke[activeAngleStroke.length - 1]
+          };
         }
         drawPatternCanvas();
         return;
@@ -854,6 +944,16 @@ WEB_APP_HTML = r"""<!doctype html>
     }
 
     function continuePatternPaint(event) {
+      if (draggedPatternPoint) {
+        event.preventDefault();
+        const point = canvasPoint(event);
+        draggedPatternPoint.stroke[draggedPatternPoint.index].x = point.x;
+        draggedPatternPoint.stroke[draggedPatternPoint.index].y = point.y;
+        draggedPatternPoint.point = draggedPatternPoint.stroke[draggedPatternPoint.index];
+        selectedPatternPoint = draggedPatternPoint;
+        drawPatternCanvas();
+        return;
+      }
       if (!isPaintingPattern) return;
       event.preventDefault();
       const point = canvasPoint(event);
@@ -866,6 +966,15 @@ WEB_APP_HTML = r"""<!doctype html>
     }
 
     function stopPatternPaint(event) {
+      if (draggedPatternPoint) {
+        event.preventDefault();
+        draggedPatternPoint = null;
+        if (patternCanvas.hasPointerCapture(event.pointerId)) {
+          patternCanvas.releasePointerCapture(event.pointerId);
+        }
+        drawPatternCanvas();
+        return;
+      }
       if (!isPaintingPattern) return;
       event.preventDefault();
       isPaintingPattern = false;
@@ -1039,8 +1148,14 @@ WEB_APP_HTML = r"""<!doctype html>
     document.getElementById('finishAngleStroke').addEventListener('click', finishAngleStroke);
     anglePointModeEl.addEventListener('change', () => {
       activeAngleStroke = null;
+      selectedPatternPoint = null;
+      draggedPatternPoint = null;
+      patternStatusEl.textContent = anglePointModeEl.checked
+        ? 'Angle points: click to add vertices, drag existing points to edit, Finish line starts a new stroke.'
+        : 'Free draw: drag to draw road shapes freely.';
       drawPatternCanvas();
     });
+    document.getElementById('deletePatternPoint').addEventListener('click', deleteSelectedPatternPoint);
     document.getElementById('searchPattern').addEventListener('click', () => {
       searchPattern().catch((error) => {
         patternStatusEl.textContent = 'Pattern search failed: ' + error.message;
