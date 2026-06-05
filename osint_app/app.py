@@ -205,6 +205,7 @@ class OsmInfoApp(tk.Tk):
     def _fetch_worker(self, lat: float, lon: float, radius: int) -> None:
         try:
             data = fetch_osm_data(lat, lon, radius)
+            data["_fetch_area"] = {"lat": lat, "lon": lon, "radius": radius}
         except (HTTPError, URLError, TimeoutError) as exc:
             self.after(0, lambda: self._fetch_failed(str(exc)))
             return

@@ -237,6 +237,8 @@ def build_map_payload(data: dict) -> dict:
             style = POINT_KINDS[kind]
             points.append(
                 {
+                    "osmType": element_type,
+                    "osmId": element.get("id"),
                     "coords": lat_lon,
                     "name": element_name(element),
                     "category": element_category(element),
@@ -265,4 +267,5 @@ def build_map_payload(data: dict) -> dict:
             "skipped": skipped,
         },
         "pointKinds": POINT_KINDS,
+        "fetchArea": data.get("_fetch_area"),
     }

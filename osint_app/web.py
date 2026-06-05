@@ -473,6 +473,29 @@ WEB_APP_HTML = r"""<!doctype html>
       gap: 5px 8px;
       margin: 8px 0;
     }
+    .nearby-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 8px;
+      margin: 8px 0;
+    }
+    .nearby-controls input {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .coord-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .coord-row input {
+      flex: 1;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    #nearbyStatus {
+      margin-top: 6px;
+    }
     #patternMapsBar {
       position: absolute;
       left: 50%;
@@ -525,8 +548,15 @@ WEB_APP_HTML = r"""<!doctype html>
       <summary>Map tools</summary>
       <div class="tool-row">
         <button id="fit">Fit</button>
+        <button id="toggleDataBorder">Show border</button>
         <button id="focusMap">Full map</button>
         <button id="toggleMapRotation">Rotate map</button>
+      </div>
+      <div class="coord-row">
+        <input id="gpsSearch" type="text" placeholder="48.866669, 2.333330">
+        <input id="borderRadius" type="number" min="1" step="1" value="4000" title="Border radius in meters">
+        <button id="goGps">Go</button>
+        <button id="setDataBorder">Set border</button>
       </div>
       <div id="mapRotationControls">
         <input id="mapRotation" type="range" min="0" max="359" step="1" value="0">
@@ -548,6 +578,21 @@ WEB_APP_HTML = r"""<!doctype html>
       </div>
       <div class="stat">Point layers</div>
       <div id="pointFilters"></div>
+    </details>
+    <details class="panel-section section" id="nearbySearchSection" open>
+      <summary>Nearby match</summary>
+      <div class="stat">Find places where selected point types appear close together.</div>
+      <input id="nearbyTerms" type="text" placeholder="Text searches: boucherie, presse">
+      <div id="nearbyKindOptions" class="point-filter-options"></div>
+      <div class="nearby-controls">
+        <label>Radius (m)<input id="nearbyRadius" type="number" min="1" step="1" value="80"></label>
+        <label>At least<input id="nearbyMinimum" type="number" min="1" step="1" value="2"></label>
+      </div>
+      <div class="tool-row">
+        <button id="runNearbySearch">Search nearby</button>
+        <button id="clearNearbySearch">Clear nearby</button>
+      </div>
+      <div id="nearbyStatus" class="stat">Select point types, then search.</div>
     </details>
     <details class="panel-section section" id="roadSearchSection" open>
       <summary>Road search</summary>
@@ -581,6 +626,7 @@ WEB_APP_HTML = r"""<!doctype html>
           </div>
           <div class="option-row">
             <label><input id="anglePointMode" type="checkbox"> Angle points</label>
+            <label><input id="intersectionMode" type="checkbox"> Intersection</label>
             <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
             <label><input id="preciseRotation" type="checkbox"> 10 deg rotation (slow)</label>
           </div>
@@ -613,6 +659,8 @@ WEB_APP_HTML = r"""<!doctype html>
     const statusEl = document.getElementById('status');
     const detailsEl = document.getElementById('details');
     const filterEl = document.getElementById('filter');
+    const gpsSearchEl = document.getElementById('gpsSearch');
+    const borderRadiusEl = document.getElementById('borderRadius');
     const roadsEl = document.getElementById('roads');
     const areasEl = document.getElementById('areas');
     const mapEl = document.getElementById('map');
@@ -621,6 +669,11 @@ WEB_APP_HTML = r"""<!doctype html>
     const mapRotationNumberEl = document.getElementById('mapRotationNumber');
     const dragMapRotationEl = document.getElementById('dragMapRotation');
     const pointFiltersEl = document.getElementById('pointFilters');
+    const nearbyKindOptionsEl = document.getElementById('nearbyKindOptions');
+    const nearbyTermsEl = document.getElementById('nearbyTerms');
+    const nearbyRadiusEl = document.getElementById('nearbyRadius');
+    const nearbyMinimumEl = document.getElementById('nearbyMinimum');
+    const nearbyStatusEl = document.getElementById('nearbyStatus');
     const patternCanvas = document.getElementById('patternCanvas');
     const patternCtx = patternCanvas.getContext('2d');
     const patternStatusEl = document.getElementById('patternStatus');
@@ -631,12 +684,16 @@ WEB_APP_HTML = r"""<!doctype html>
     const patternResultsPanelEl = document.getElementById('patternResultsPanel');
     const patternMapsBarEl = document.getElementById('patternMapsBar');
     const anglePointModeEl = document.getElementById('anglePointMode');
+    const intersectionModeEl = document.getElementById('intersectionMode');
     const devRoadSelectEl = document.getElementById('devRoadSelect');
     const roadGroupInputs = Array.from(document.querySelectorAll('input[data-road-group]'));
 
     const roadsLayer = L.layerGroup().addTo(map);
     const areasLayer = L.layerGroup().addTo(map);
     const pointsLayer = L.layerGroup().addTo(map);
+    const gpsSearchLayer = L.layerGroup().addTo(map);
+    const dataBorderLayer = L.featureGroup().addTo(map);
+    const nearbyResultsLayer = L.layerGroup().addTo(map);
     const patternResultsLayer = L.layerGroup().addTo(map);
     const devRoadSelectionLayer = L.layerGroup().addTo(map);
     let payload = null;
@@ -654,6 +711,7 @@ WEB_APP_HTML = r"""<!doctype html>
     let lastRoadCompareExport = null;
     let isDraggingMapRotation = false;
     let mapRotationDragOffset = 0;
+    let visualBorder = null;
     const leafletSetTransform = L.DomUtil.setTransform;
     L.DomUtil.setTransform = function patchedSetTransform(element, offset, scale) {
       leafletSetTransform.call(this, element, offset, scale);
@@ -731,6 +789,31 @@ WEB_APP_HTML = r"""<!doctype html>
       detailsEl.innerHTML =
         `<a class="maps-link" href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Open this place in Google Maps</a>` +
         `<pre>${escapeHtml((item.details || 'No details') + coordText)}</pre>`;
+    }
+
+    function goToGpsSearch() {
+      const match = gpsSearchEl.value.trim().match(/^\s*(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)\s*$/);
+      if (!match) {
+        statusEl.textContent = 'Invalid GPS coordinates. Use latitude, longitude like 48.866669, 2.333330.';
+        return;
+      }
+      const lat = Number.parseFloat(match[1].replace(',', '.'));
+      const lon = Number.parseFloat(match[2].replace(',', '.'));
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        statusEl.textContent = 'Invalid GPS coordinates. Latitude must be -90..90 and longitude -180..180.';
+        return;
+      }
+      gpsSearchLayer.clearLayers();
+      L.marker([lat, lon])
+        .bindPopup(
+          `<strong>GPS position</strong><br>` +
+          `${lat.toFixed(6)}, ${lon.toFixed(6)}<br>` +
+          `<a href="https://www.google.com/maps?q=${lat},${lon}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a>`
+        )
+        .addTo(gpsSearchLayer)
+        .openPopup();
+      map.setView([lat, lon], Math.max(map.getZoom(), 17));
+      statusEl.textContent = `Centered on ${lat.toFixed(6)}, ${lon.toFixed(6)}`;
     }
 
     function escapeHtml(value) {
@@ -1085,6 +1168,100 @@ WEB_APP_HTML = r"""<!doctype html>
 
     function searchPayloadStrokes() {
       return patternStrokes.map(smoothStrokePoints);
+    }
+
+    function lineIntersection(a, b, c, d) {
+      const den = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x);
+      if (Math.abs(den) < 1e-9) return null;
+      const t = ((a.x - c.x) * (c.y - d.y) - (a.y - c.y) * (c.x - d.x)) / den;
+      const u = -((a.x - b.x) * (a.y - c.y) - (a.y - b.y) * (a.x - c.x)) / den;
+      if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+      return {
+        x: a.x + t * (b.x - a.x),
+        y: a.y + t * (b.y - a.y)
+      };
+    }
+
+    function nearestPointOnSegment(point, a, b) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const lengthSq = dx * dx + dy * dy;
+      if (lengthSq <= 0) return { point: a, ratio: 0, distance: Math.hypot(point.x - a.x, point.y - a.y) };
+      const ratio = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq));
+      const projected = { x: a.x + dx * ratio, y: a.y + dy * ratio };
+      return { point: projected, ratio, distance: Math.hypot(point.x - projected.x, point.y - projected.y) };
+    }
+
+    function averagePoint(points) {
+      return {
+        x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+        y: points.reduce((sum, point) => sum + point.y, 0) / points.length
+      };
+    }
+
+    function intersectionCenter(strokes) {
+      const intersections = [];
+      for (let leftIndex = 0; leftIndex < strokes.length; leftIndex++) {
+        for (let rightIndex = leftIndex + 1; rightIndex < strokes.length; rightIndex++) {
+          for (let leftSegment = 1; leftSegment < strokes[leftIndex].length; leftSegment++) {
+            for (let rightSegment = 1; rightSegment < strokes[rightIndex].length; rightSegment++) {
+              const hit = lineIntersection(
+                strokes[leftIndex][leftSegment - 1],
+                strokes[leftIndex][leftSegment],
+                strokes[rightIndex][rightSegment - 1],
+                strokes[rightIndex][rightSegment]
+              );
+              if (hit) intersections.push(hit);
+            }
+          }
+        }
+      }
+      if (intersections.length) return averagePoint(intersections);
+
+      const endpoints = strokes.flatMap((stroke) => [stroke[0], stroke[stroke.length - 1]]);
+      let bestCluster = [];
+      for (const endpoint of endpoints) {
+        const cluster = endpoints.filter((candidate) => Math.hypot(candidate.x - endpoint.x, candidate.y - endpoint.y) <= 0.06);
+        if (cluster.length > bestCluster.length) bestCluster = cluster;
+      }
+      if (bestCluster.length >= 2) return averagePoint(bestCluster);
+
+      return averagePoint(strokes.flat());
+    }
+
+    function buildIntersectionPattern(strokes) {
+      const cleanStrokes = strokes.filter((stroke) => stroke.length >= 2);
+      const center = intersectionCenter(cleanStrokes);
+      const branchEnds = [];
+      const seenAngles = [];
+      for (const stroke of cleanStrokes) {
+        let best = { distance: Infinity, ratio: 0 };
+        for (let index = 1; index < stroke.length; index++) {
+          const projected = nearestPointOnSegment(center, stroke[index - 1], stroke[index]);
+          if (projected.distance < best.distance) best = projected;
+        }
+        const endpoints = [stroke[0], stroke[stroke.length - 1]];
+        for (const endpoint of endpoints) {
+          const distance = Math.hypot(endpoint.x - center.x, endpoint.y - center.y);
+          if (distance < 0.04) continue;
+          const angle = Math.round(((Math.atan2(endpoint.x - center.x, center.y - endpoint.y) * 180 / Math.PI) + 360) % 360 / 5) * 5;
+          if (best.distance > 0.08 && cleanStrokes.length > 1) continue;
+          if (seenAngles.some((existing) => angleDelta(existing, angle) < 10)) continue;
+          seenAngles.push(angle);
+          branchEnds.push(endpoint);
+        }
+      }
+      if (branchEnds.length < 2) {
+        throw new Error('Draw at least two visible branches for intersection mode.');
+      }
+      const points = [{ id: 'center', x: center.x, y: center.y }];
+      const edges = [];
+      branchEnds.forEach((endpoint, index) => {
+        const id = `b${index}`;
+        points.push({ id, x: endpoint.x, y: endpoint.y });
+        edges.push({ from: 'center', to: id });
+      });
+      return { points, edges };
     }
 
     function exportPatternSearch() {
@@ -1458,6 +1635,9 @@ WEB_APP_HTML = r"""<!doctype html>
         patternStatusEl.textContent = `${results.matches.length} matches. Compared ${results.pattern.degree} drawn stroke(s) against local road-network patches.`;
       } else if (results.pattern.mode === 'free-trace') {
         patternStatusEl.textContent = `${results.matches.length} matches. Compared ${results.pattern.degree} drawn stroke(s) as full traces.`;
+      } else if (results.pattern.mode === 'intersection') {
+        patternStatusEl.textContent =
+          `${results.matches.length} intersections. Pattern: ${results.pattern.degree} branches, angle gaps ${results.pattern.angles.join(', ')}.`;
       } else {
         patternStatusEl.textContent =
           `${results.matches.length} matches. Pattern: ${results.pattern.degree} branches, angles ${results.pattern.angles.join(', ')}, turns ${results.pattern.branchTurns.join(', ')}.`;
@@ -1676,15 +1856,26 @@ WEB_APP_HTML = r"""<!doctype html>
         return;
       }
       const payloadStrokes = searchPayloadStrokes();
+      let requestPattern = { strokes: payloadStrokes };
+      if (intersectionModeEl.checked) {
+        try {
+          requestPattern = buildIntersectionPattern(payloadStrokes);
+        } catch (error) {
+          patternStatusEl.textContent = error.message;
+          return;
+        }
+      }
       const rotationStep = preciseRotationEl.checked ? 10 : 90;
-      patternStatusEl.textContent = preciseRotationEl.checked
+      patternStatusEl.textContent = intersectionModeEl.checked
+        ? 'Searching intersections by branch angles...'
+        : preciseRotationEl.checked
         ? 'Searching similar road patterns with 10 deg rotation. This can take about a minute...'
         : 'Searching similar road patterns...';
       const response = await fetch('/api/pattern-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          strokes: payloadStrokes,
+          ...requestPattern,
           rotationInvariant: freeRotationEl.checked,
           rotationStep,
           roadGroups
@@ -1699,6 +1890,8 @@ WEB_APP_HTML = r"""<!doctype html>
         exportedAt: new Date().toISOString(),
         appMode: 'OSM Pattern Explorer',
         request: {
+          ...requestPattern,
+          mode: intersectionModeEl.checked ? 'intersection' : 'strokes',
           strokes: payloadStrokes,
           rawStrokes: patternStrokes,
           smoothStrokeIndexes: patternStrokes.map((stroke, index) => smoothPatternStrokes.has(stroke) ? index : null).filter((index) => index !== null),
@@ -1758,6 +1951,237 @@ WEB_APP_HTML = r"""<!doctype html>
         section.appendChild(options);
         pointFiltersEl.appendChild(section);
       }
+    }
+
+    function buildNearbyFilters() {
+      nearbyKindOptionsEl.innerHTML = '';
+      const defaultKinds = new Set(['traffic_sign', 'traffic_signals', 'speed_camera']);
+      for (const [kind, meta] of Object.entries(payload.pointKinds || {})) {
+        const count = payload.stats.pointKinds[kind] || 0;
+        if (!count) continue;
+        const label = document.createElement('label');
+        label.title = `${meta.label}: ${count.toLocaleString()} points`;
+        const checked = defaultKinds.has(kind) ? ' checked' : '';
+        label.innerHTML = `<input type="checkbox" data-nearby-kind="${escapeHtml(kind)}"${checked}> `
+          + layerIconHtml(meta)
+          + `${escapeHtml(meta.label)} (${count.toLocaleString()})`;
+        label.querySelector('input').addEventListener('change', clampNearbyMinimum);
+        nearbyKindOptionsEl.appendChild(label);
+      }
+      clampNearbyMinimum();
+    }
+
+    function selectedNearbyKinds() {
+      return Array.from(nearbyKindOptionsEl.querySelectorAll('input[data-nearby-kind]:checked'))
+        .map((input) => input.dataset.nearbyKind);
+    }
+
+    function nearbyTextTerms() {
+      const seen = new Set();
+      const terms = [];
+      for (const rawTerm of nearbyTermsEl.value.split(/[,+\n]/)) {
+        const term = rawTerm.trim().toLowerCase();
+        if (!term || seen.has(term)) continue;
+        seen.add(term);
+        terms.push(term);
+      }
+      return terms;
+    }
+
+    function clampNearbyMinimum() {
+      const selectedCount = selectedNearbyKinds().length + nearbyTextTerms().length;
+      nearbyMinimumEl.max = Math.max(1, selectedCount);
+      let value = Number.parseInt(nearbyMinimumEl.value, 10);
+      if (!Number.isFinite(value)) value = Math.min(2, selectedCount || 1);
+      value = Math.max(1, Math.min(selectedCount || 1, value));
+      nearbyMinimumEl.value = String(value);
+    }
+
+    function pointSearchText(point) {
+      return `${point.name || ''} ${point.category || ''} ${point.details || ''}`.toLowerCase();
+    }
+
+    function distanceMeters(left, right) {
+      const latScale = 111320;
+      const centerLat = (left[0] + right[0]) / 2;
+      const lonScale = 111320 * Math.cos(centerLat * Math.PI / 180);
+      return Math.hypot((right[0] - left[0]) * latScale, (right[1] - left[1]) * lonScale);
+    }
+
+    function combinations(values, size) {
+      const results = [];
+      function visit(start, current) {
+        if (current.length === size) {
+          results.push([...current]);
+          return;
+        }
+        for (let index = start; index <= values.length - (size - current.length); index++) {
+          current.push(values[index]);
+          visit(index + 1, current);
+          current.pop();
+        }
+      }
+      visit(0, []);
+      return results;
+    }
+
+    function pointIdentity(point) {
+      const id = point.osmId == null ? `${point.coords[0].toFixed(6)},${point.coords[1].toFixed(6)}` : point.osmId;
+      return `${point.kind}:${id}`;
+    }
+
+    function criterionPointIdentity(criterion, point) {
+      return `${criterion.id}:${pointIdentity(point)}`;
+    }
+
+    function buildPointGrid(points, radius) {
+      const latCell = Math.max(radius / 111320, 0.000001);
+      const centerLat = points.length
+        ? points.reduce((sum, point) => sum + point.coords[0], 0) / points.length
+        : 0;
+      const lonCell = Math.max(radius / (111320 * Math.cos(centerLat * Math.PI / 180)), 0.000001);
+      const grid = new Map();
+      for (const point of points) {
+        const latIndex = Math.floor(point.coords[0] / latCell);
+        const lonIndex = Math.floor(point.coords[1] / lonCell);
+        const key = `${latIndex}:${lonIndex}`;
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(point);
+      }
+      return { grid, latCell, lonCell };
+    }
+
+    function nearbyCandidates(anchor, index, radius) {
+      const latIndex = Math.floor(anchor.coords[0] / index.latCell);
+      const lonIndex = Math.floor(anchor.coords[1] / index.lonCell);
+      const candidates = [];
+      for (let latOffset = -1; latOffset <= 1; latOffset++) {
+        for (let lonOffset = -1; lonOffset <= 1; lonOffset++) {
+          const bucket = index.grid.get(`${latIndex + latOffset}:${lonIndex + lonOffset}`);
+          if (bucket) candidates.push(...bucket);
+        }
+      }
+      return candidates;
+    }
+
+    function runNearbySearch() {
+      if (!payload) return;
+      nearbyResultsLayer.clearLayers();
+      const selectedKinds = selectedNearbyKinds();
+      const textTerms = nearbyTextTerms();
+      const radius = Math.max(1, Number.parseInt(nearbyRadiusEl.value, 10) || 1);
+      clampNearbyMinimum();
+      const minimum = Math.max(1, Number.parseInt(nearbyMinimumEl.value, 10) || 1);
+      if (selectedKinds.length + textTerms.length < minimum) {
+        nearbyStatusEl.textContent = 'Select or enter at least as many criteria as the minimum.';
+        return;
+      }
+
+      const criteria = [];
+      for (const kind of selectedKinds) {
+        const meta = payload.pointKinds[kind] || {};
+        criteria.push({
+          id: `kind:${kind}`,
+          label: meta.label || kind,
+          points: payload.points.filter((point) => point.kind === kind)
+        });
+      }
+      for (const term of textTerms) {
+        criteria.push({
+          id: `text:${term}`,
+          label: `"${term}"`,
+          points: payload.points.filter((point) => pointSearchText(point).includes(term))
+        });
+      }
+      const availableCriteria = criteria.filter((criterion) => criterion.points.length);
+      if (availableCriteria.length < minimum) {
+        nearbyStatusEl.textContent = `${availableCriteria.length.toLocaleString()} selected criteria have matching points. Lower the minimum or use broader terms.`;
+        return;
+      }
+      for (const criterion of availableCriteria) {
+        criterion.pointIds = new Set(criterion.points.map(pointIdentity));
+      }
+
+      const pointMap = new Map();
+      for (const criterion of availableCriteria) {
+        for (const point of criterion.points) {
+          pointMap.set(pointIdentity(point), point);
+        }
+      }
+      const points = Array.from(pointMap.values());
+      const pointIndex = buildPointGrid(points, radius);
+      const seen = new Set();
+      const results = [];
+
+      for (const combo of combinations(availableCriteria, minimum)) {
+        const anchorCriterion = [...combo].sort((left, right) => left.points.length - right.points.length)[0];
+        for (const anchor of anchorCriterion.points) {
+          const byCriterion = {};
+          for (const point of nearbyCandidates(anchor, pointIndex, radius)) {
+            const distance = distanceMeters(anchor.coords, point.coords);
+            if (distance > radius) continue;
+            for (const criterion of availableCriteria) {
+              if (!criterion.pointIds.has(pointIdentity(point))) continue;
+              const current = byCriterion[criterion.id];
+              if (!current || distance < current.distance) {
+                byCriterion[criterion.id] = { criterion, point, distance };
+              }
+            }
+          }
+          const matches = availableCriteria
+            .map((criterion) => byCriterion[criterion.id])
+            .filter(Boolean);
+          const uniquePointCount = new Set(matches.map((match) => pointIdentity(match.point))).size;
+          if (matches.length < minimum || uniquePointCount < minimum) continue;
+          const key = matches.map((match) => criterionPointIdentity(match.criterion, match.point)).sort().join('|');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const matchedPoints = Array.from(
+            new Map(matches.map((match) => [pointIdentity(match.point), match.point])).values()
+          );
+          const center = [
+            matchedPoints.reduce((sum, point) => sum + point.coords[0], 0) / matchedPoints.length,
+            matchedPoints.reduce((sum, point) => sum + point.coords[1], 0) / matchedPoints.length
+          ];
+          results.push({
+            center,
+            matches,
+            points: matchedPoints,
+            maxDistance: Math.max(...matches.map((match) => match.distance))
+          });
+        }
+      }
+
+      results.sort((left, right) =>
+        right.matches.length - left.matches.length || left.maxDistance - right.maxDistance
+      );
+      const limitedResults = results.slice(0, 250);
+      for (const result of limitedResults) {
+        const popupRows = result.matches.map((match) => {
+          const point = match.point;
+          return `<li><strong>${escapeHtml(match.criterion.label)}</strong>: ${escapeHtml(point.name || '(no name)')} (${escapeHtml(point.category || '')})</li>`;
+        }).join('');
+        const mapsUrl = `https://www.google.com/maps?q=${result.center[0]},${result.center[1]}`;
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="result-icon">${result.matches.length}</div>`,
+          iconSize: [30, 30],
+          iconAnchor: [15, 15],
+          popupAnchor: [0, -15]
+        });
+        L.marker(result.center, { icon })
+          .bindPopup(
+            `<strong>${result.matches.length} matched criteria within ${radius} m</strong><br>` +
+            `Max anchor distance: ${Math.round(result.maxDistance)} m<br>` +
+            `<a href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a>` +
+            `<ul>${popupRows}</ul>`
+          )
+          .addTo(nearbyResultsLayer);
+      }
+      nearbyStatusEl.textContent =
+        `${results.length.toLocaleString()} nearby matches found` +
+        (results.length > limitedResults.length ? `, showing first ${limitedResults.length.toLocaleString()}` : '') +
+        `. Started from the rarest list inside each ${minimum}-criteria combination.`;
     }
 
     function setAllLayers(checked) {
@@ -1844,8 +2268,80 @@ WEB_APP_HTML = r"""<!doctype html>
     }
 
     function fitMap() {
+      if (payload && payload.fetchArea) {
+        const area = payload.fetchArea;
+        map.fitBounds(L.latLng(area.lat, area.lon).toBounds(area.radius * 2), { padding: [24, 24] });
+        return;
+      }
       if (payload && payload.bounds.length) {
         map.fitBounds(payload.bounds, { padding: [24, 24] });
+      }
+    }
+
+    function parseGpsSearch() {
+      const match = gpsSearchEl.value.trim().match(/^\s*(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)\s*$/);
+      if (!match) return null;
+      const lat = Number.parseFloat(match[1].replace(',', '.'));
+      const lon = Number.parseFloat(match[2].replace(',', '.'));
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        return null;
+      }
+      return [lat, lon];
+    }
+
+    function setVisualBorder(center, radius, label = 'Visual border') {
+      dataBorderLayer.clearLayers();
+      visualBorder = { center, radius, label };
+      L.circle(center, {
+        renderer,
+        radius,
+        color: '#dc2626',
+        weight: 3,
+        opacity: 0.95,
+        fill: false,
+        dashArray: '8 6'
+      }).bindPopup(
+        `<strong>${escapeHtml(label)}</strong><br>` +
+        `Center: ${center[0].toFixed(6)}, ${center[1].toFixed(6)}<br>` +
+        `Radius: ${Math.round(radius).toLocaleString()} m`
+      ).addTo(dataBorderLayer);
+      document.getElementById('toggleDataBorder').textContent = 'Hide border';
+      map.fitBounds(dataBorderLayer.getBounds(), { padding: [24, 24] });
+    }
+
+    function setManualDataBorder() {
+      const center = parseGpsSearch();
+      const radius = Number.parseInt(borderRadiusEl.value, 10);
+      if (!center || !Number.isFinite(radius) || radius < 1) {
+        statusEl.textContent = 'Set border needs GPS coordinates and a radius in meters.';
+        return;
+      }
+      setVisualBorder(center, radius, 'Manual visual border');
+      statusEl.textContent = `Visual border set at ${center[0].toFixed(6)}, ${center[1].toFixed(6)} with ${radius.toLocaleString()} m radius.`;
+    }
+
+    function showFetchDataBorder() {
+      if (!payload || !payload.fetchArea) return false;
+      const area = payload.fetchArea;
+      setVisualBorder([area.lat, area.lon], area.radius, 'Fetched data radius');
+      gpsSearchEl.value = `${Number(area.lat).toFixed(6)}, ${Number(area.lon).toFixed(6)}`;
+      borderRadiusEl.value = String(area.radius);
+      return true;
+    }
+
+    function toggleDataBorder() {
+      if (dataBorderLayer.getLayers().length) {
+        dataBorderLayer.clearLayers();
+        document.getElementById('toggleDataBorder').textContent = 'Show border';
+        visualBorder = null;
+        return;
+      }
+      if (visualBorder) {
+        setVisualBorder(visualBorder.center, visualBorder.radius, visualBorder.label);
+        return;
+      }
+      if (!showFetchDataBorder()) {
+        statusEl.textContent = 'No fetched radius available. Enter GPS coordinates and radius, then use Set border.';
       }
     }
 
@@ -1854,17 +2350,27 @@ WEB_APP_HTML = r"""<!doctype html>
       if (!response.ok) throw new Error(await response.text());
       payload = await response.json();
       buildPointFilters();
+      buildNearbyFilters();
       statusEl.innerHTML =
         `${payload.stats.elements.toLocaleString()} OSM elements<br>` +
         `${payload.stats.roads.toLocaleString()} roads, ` +
         `${payload.stats.areas.toLocaleString()} areas, ` +
         `${payload.stats.points.toLocaleString()} points`;
       fitMap();
+      showFetchDataBorder();
       redraw();
     }
 
     document.getElementById('fit').addEventListener('click', fitMap);
+    document.getElementById('toggleDataBorder').addEventListener('click', toggleDataBorder);
+    document.getElementById('setDataBorder').addEventListener('click', setManualDataBorder);
     document.getElementById('focusMap').addEventListener('click', () => setMapFocus(true));
+    document.getElementById('goGps').addEventListener('click', goToGpsSearch);
+    gpsSearchEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        goToGpsSearch();
+      }
+    });
     document.getElementById('toggleMapRotation').addEventListener('click', () => {
       setMapRotationControls(!mapRotationControlsEl.classList.contains('active'));
     });
@@ -1879,6 +2385,13 @@ WEB_APP_HTML = r"""<!doctype html>
     map.on('move zoom zoomend moveend resize', applyMapPaneRotation);
     document.getElementById('uncheckAllLayers').addEventListener('click', () => setAllLayers(false));
     document.getElementById('checkAllLayers').addEventListener('click', () => setAllLayers(true));
+    document.getElementById('runNearbySearch').addEventListener('click', runNearbySearch);
+    document.getElementById('clearNearbySearch').addEventListener('click', () => {
+      nearbyResultsLayer.clearLayers();
+      nearbyStatusEl.textContent = 'Nearby results cleared.';
+    });
+    nearbyTermsEl.addEventListener('input', clampNearbyMinimum);
+    nearbyMinimumEl.addEventListener('change', clampNearbyMinimum);
     mapFocusToggleEl.addEventListener('click', () => setMapFocus(!document.body.classList.contains('map-focus')));
     document.getElementById('focusPattern').addEventListener('click', () => {
       setPatternFocus(!document.body.classList.contains('pattern-focus'));
@@ -1896,6 +2409,16 @@ WEB_APP_HTML = r"""<!doctype html>
       patternStatusEl.textContent = anglePointModeEl.checked
         ? 'Angle points: click to add vertices, drag existing points to edit, Finish line starts a new stroke.'
         : 'Free draw: drag to draw road shapes freely.';
+      drawPatternCanvas();
+    });
+    intersectionModeEl.addEventListener('change', () => {
+      if (intersectionModeEl.checked && !anglePointModeEl.checked) {
+        anglePointModeEl.checked = true;
+        activeAngleStroke = null;
+      }
+      patternStatusEl.textContent = intersectionModeEl.checked
+        ? 'Intersection mode: draw branches crossing or starting from the same center, then Search.'
+        : 'Intersection mode disabled.';
       drawPatternCanvas();
     });
     document.getElementById('deletePatternPoint').addEventListener('click', deleteSelectedPatternPoint);

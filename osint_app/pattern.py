@@ -917,6 +917,7 @@ def search_road_pattern(
             "angles": [round(angle, 1) for angle in sorted(pattern_angles)],
             "branchTurns": [round(branch["turn"], 1) for branch in pattern_branches],
             "rotationInvariant": rotation_invariant,
+            "mode": "intersection",
         },
         "matches": _dedupe_nearby_matches(candidates, limit),
     }
