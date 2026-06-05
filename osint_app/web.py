@@ -209,6 +209,24 @@ WEB_APP_HTML = r"""<!doctype html>
       left: 50px;
       z-index: 1001;
     }
+    #map {
+      --map-rotation: 0deg;
+    }
+    #mapRotationControls {
+      display: none;
+      flex-basis: 100%;
+      gap: 8px;
+      align-items: center;
+    }
+    #mapRotationControls.active {
+      display: flex;
+    }
+    #mapRotation {
+      width: 150px;
+    }
+    #map.rotate-drag-enabled {
+      cursor: crosshair;
+    }
     #panel {
       position: absolute;
       top: 12px;
@@ -436,10 +454,17 @@ WEB_APP_HTML = r"""<!doctype html>
     <div class="row">
       <button id="fit">Fit</button>
       <button id="focusMap">Full map</button>
+      <button id="toggleMapRotation">Rotate map</button>
       <button id="uncheckAllLayers">Uncheck all</button>
       <button id="checkAllLayers">Check all</button>
       <label><input id="roads" type="checkbox"> Roads</label>
       <label><input id="areas" type="checkbox"> Areas</label>
+      <div id="mapRotationControls">
+        <input id="mapRotation" type="range" min="0" max="359" step="1" value="0">
+        <input id="mapRotationNumber" type="number" min="0" max="359" step="1" value="0">
+        <label><input id="dragMapRotation" type="checkbox"> Drag rotate</label>
+        <button id="resetMapRotation">Reset rotation</button>
+      </div>
     </div>
     <div class="stat">Point layers</div>
     <div id="pointFilters"></div>
@@ -471,8 +496,14 @@ WEB_APP_HTML = r"""<!doctype html>
             <button id="focusPattern">Large drawing</button>
             <button id="finishAngleStroke">Finish line</button>
           </div>
+          <div class="row">
+            <label><input id="devRoadSelect" type="checkbox"> Dev select road</label>
+            <button id="compareSelectedRoad">Compare selected road</button>
+            <button id="exportSelectedRoad">Export selected road</button>
+          </div>
           <label><input id="anglePointMode" type="checkbox"> Angle points</label>
           <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
+          <label><input id="preciseRotation" type="checkbox"> 10 deg rotation (slow)</label>
           <div id="patternStatus" class="stat">Draw road shapes freely. Add more strokes if the first search is too vague.</div>
         </div>
       </div>
@@ -484,9 +515,10 @@ WEB_APP_HTML = r"""<!doctype html>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const map = L.map('map', { preferCanvas: true });
-    const renderer = L.canvas({ padding: 0.5 });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const renderer = L.canvas({ padding: 2.5 });
+    const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
+      keepBuffer: 14,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
@@ -495,22 +527,30 @@ WEB_APP_HTML = r"""<!doctype html>
     const filterEl = document.getElementById('filter');
     const roadsEl = document.getElementById('roads');
     const areasEl = document.getElementById('areas');
+    const mapEl = document.getElementById('map');
+    const mapRotationControlsEl = document.getElementById('mapRotationControls');
+    const mapRotationEl = document.getElementById('mapRotation');
+    const mapRotationNumberEl = document.getElementById('mapRotationNumber');
+    const dragMapRotationEl = document.getElementById('dragMapRotation');
     const pointFiltersEl = document.getElementById('pointFilters');
     const patternCanvas = document.getElementById('patternCanvas');
     const patternCtx = patternCanvas.getContext('2d');
     const patternStatusEl = document.getElementById('patternStatus');
     const freeRotationEl = document.getElementById('freeRotation');
+    const preciseRotationEl = document.getElementById('preciseRotation');
     const mapFocusToggleEl = document.getElementById('mapFocusToggle');
     const patternResultsEl = document.getElementById('patternResults');
     const patternResultsPanelEl = document.getElementById('patternResultsPanel');
     const patternMapsBarEl = document.getElementById('patternMapsBar');
     const anglePointModeEl = document.getElementById('anglePointMode');
+    const devRoadSelectEl = document.getElementById('devRoadSelect');
     const roadGroupInputs = Array.from(document.querySelectorAll('input[data-road-group]'));
 
     const roadsLayer = L.layerGroup().addTo(map);
     const areasLayer = L.layerGroup().addTo(map);
     const pointsLayer = L.layerGroup().addTo(map);
     const patternResultsLayer = L.layerGroup().addTo(map);
+    const devRoadSelectionLayer = L.layerGroup().addTo(map);
     let payload = null;
     let drawingVersion = 0;
     let patternImage = null;
@@ -522,6 +562,17 @@ WEB_APP_HTML = r"""<!doctype html>
     let patternMatches = [];
     let selectedPatternMatchIndex = -1;
     let lastPatternSearchExport = null;
+    let selectedDevRoad = null;
+    let lastRoadCompareExport = null;
+    let isDraggingMapRotation = false;
+    let mapRotationDragOffset = 0;
+    const leafletSetTransform = L.DomUtil.setTransform;
+    L.DomUtil.setTransform = function patchedSetTransform(element, offset, scale) {
+      leafletSetTransform.call(this, element, offset, scale);
+      if (element === map._mapPane) {
+        applyMapPaneRotation();
+      }
+    };
     const enabledPointKinds = new Set();
     const patternStrokes = [];
     const smoothPatternStrokes = new WeakSet();
@@ -532,8 +583,12 @@ WEB_APP_HTML = r"""<!doctype html>
       return `${item.name} ${item.category} ${item.details}`.toLowerCase().includes(filter);
     }
 
-    function bindFeature(layer, item) {
+    function bindFeature(layer, item, type) {
       layer.on('click', () => {
+        if (type === 'road' && devRoadSelectEl.checked) {
+          selectDevRoad(item);
+          return;
+        }
         showDetails(item);
       });
       const mapsUrl = googleMapsUrl(item);
@@ -543,6 +598,23 @@ WEB_APP_HTML = r"""<!doctype html>
         `<a href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a>`
       );
       return layer;
+    }
+
+    function selectDevRoad(road) {
+      if (!roadsEl.checked) {
+        patternStatusEl.textContent = 'Enable Roads before selecting a dev reference road.';
+        return;
+      }
+      selectedDevRoad = road;
+      devRoadSelectionLayer.clearLayers();
+      L.polyline(road.coords, {
+        renderer,
+        color: '#f97316',
+        weight: 8,
+        opacity: 0.95
+      }).addTo(devRoadSelectionLayer);
+      showDetails(road);
+      patternStatusEl.textContent = `Selected dev road ${road.osmId || '(no id)'}. Draw the same shape, then compare or export.`;
     }
 
     function representativeCoord(item) {
@@ -925,6 +997,277 @@ WEB_APP_HTML = r"""<!doctype html>
       patternStatusEl.textContent = 'Pattern search exported. Tell Codex which result is correct.';
     }
 
+    function downloadJson(filenamePrefix, data) {
+      const body = JSON.stringify(data, null, 2);
+      const blob = new Blob([body], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.href = url;
+      link.download = `${filenamePrefix}-${timestamp}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function normalizePolylines(polylines) {
+      const points = polylines.flat();
+      if (!points.length) return [];
+      const minX = Math.min(...points.map((point) => point[0]));
+      const maxX = Math.max(...points.map((point) => point[0]));
+      const minY = Math.min(...points.map((point) => point[1]));
+      const maxY = Math.max(...points.map((point) => point[1]));
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      const scale = Math.max(maxX - minX, maxY - minY, 1e-9);
+      return polylines.map((polyline) => polyline.map((point) => [
+        (point[0] - centerX) / scale,
+        (point[1] - centerY) / scale
+      ]));
+    }
+
+    function drawingCompareGeometry(strokes) {
+      return normalizePolylines(strokes
+        .filter((stroke) => stroke.length >= 2)
+        .map((stroke) => stroke.map((point) => [point.x, point.y])));
+    }
+
+    function roadCompareGeometry(road) {
+      if (!road || !road.coords || road.coords.length < 2) return [];
+      const centerLat = road.coords.reduce((sum, coord) => sum + coord[0], 0) / road.coords.length;
+      const latScale = 111320;
+      const lonScale = 111320 * Math.cos(centerLat * Math.PI / 180);
+      return normalizePolylines([
+        road.coords.map((coord) => [coord[1] * lonScale, coord[0] * latScale])
+      ]);
+    }
+
+    function polylineLength(polyline) {
+      let length = 0;
+      for (let index = 1; index < polyline.length; index++) {
+        length += Math.hypot(polyline[index][0] - polyline[index - 1][0], polyline[index][1] - polyline[index - 1][1]);
+      }
+      return length;
+    }
+
+    function samplePolylines(polylines, sampleCount = 12) {
+      const lengths = polylines.map(polylineLength);
+      const totalLength = lengths.reduce((sum, length) => sum + length, 0);
+      if (totalLength <= 0) return polylines.flat();
+      const samples = [];
+      polylines.forEach((polyline, polylineIndex) => {
+        const length = lengths[polylineIndex];
+        if (length <= 0 || polyline.length < 2) return;
+        const count = Math.max(2, Math.round(sampleCount * length / totalLength));
+        const segmentLengths = [];
+        for (let index = 1; index < polyline.length; index++) {
+          segmentLengths.push(Math.hypot(polyline[index][0] - polyline[index - 1][0], polyline[index][1] - polyline[index - 1][1]));
+        }
+        for (let sampleIndex = 0; sampleIndex < count; sampleIndex++) {
+          const target = (sampleIndex / Math.max(1, count - 1)) * length;
+          let covered = 0;
+          for (let segmentIndex = 0; segmentIndex < segmentLengths.length; segmentIndex++) {
+            const segmentLength = segmentLengths[segmentIndex];
+            if (covered + segmentLength >= target || segmentIndex === segmentLengths.length - 1) {
+              const first = polyline[segmentIndex];
+              const second = polyline[segmentIndex + 1];
+              const ratio = segmentLength <= 0 ? 0 : (target - covered) / segmentLength;
+              samples.push([
+                first[0] + (second[0] - first[0]) * ratio,
+                first[1] + (second[1] - first[1]) * ratio
+              ]);
+              break;
+            }
+            covered += segmentLength;
+          }
+        }
+      });
+      return samples;
+    }
+
+    function xySegments(polylines) {
+      const segments = [];
+      for (const polyline of polylines) {
+        for (let index = 1; index < polyline.length; index++) {
+          segments.push([polyline[index - 1], polyline[index]]);
+        }
+      }
+      return segments;
+    }
+
+    function pointToSegmentDistance(point, segment) {
+      const [first, second] = segment;
+      const dx = second[0] - first[0];
+      const dy = second[1] - first[1];
+      const lengthSq = dx * dx + dy * dy;
+      if (lengthSq <= 0) return Math.hypot(point[0] - first[0], point[1] - first[1]);
+      const ratio = Math.max(0, Math.min(1, ((point[0] - first[0]) * dx + (point[1] - first[1]) * dy) / lengthSq));
+      const projected = [first[0] + dx * ratio, first[1] + dy * ratio];
+      return Math.hypot(point[0] - projected[0], point[1] - projected[1]);
+    }
+
+    function averageNearestSegmentDistance(points, segments) {
+      if (!points.length || !segments.length) return 1;
+      return points.reduce((sum, point) => (
+        sum + Math.min(...segments.map((segment) => pointToSegmentDistance(point, segment)))
+      ), 0) / points.length;
+    }
+
+    function rotatePolylines(polylines, degrees) {
+      if (!degrees) return polylines;
+      const radians = degrees * Math.PI / 180;
+      const cosValue = Math.cos(radians);
+      const sinValue = Math.sin(radians);
+      return polylines.map((polyline) => polyline.map((point) => [
+        point[0] * cosValue - point[1] * sinValue,
+        point[0] * sinValue + point[1] * cosValue
+      ]));
+    }
+
+    function patchDistance(queryPolylines, candidatePolylines) {
+      const queryPoints = samplePolylines(queryPolylines);
+      const candidatePoints = samplePolylines(candidatePolylines);
+      const querySegments = xySegments(queryPolylines);
+      const candidateSegments = xySegments(candidatePolylines);
+      const queryToCandidate = averageNearestSegmentDistance(queryPoints, candidateSegments);
+      const candidateToQuery = averageNearestSegmentDistance(candidatePoints, querySegments);
+      return (queryToCandidate * 0.65) + (candidateToQuery * 0.35);
+    }
+
+    function polylineParts(points, yAxisUp) {
+      const bearings = [];
+      const lengths = [];
+      for (let index = 1; index < points.length; index++) {
+        const first = points[index - 1];
+        const second = points[index];
+        const dx = second[0] - first[0];
+        const dy = yAxisUp ? second[1] - first[1] : first[1] - second[1];
+        const length = Math.hypot(dx, second[1] - first[1]);
+        if (length <= 0) continue;
+        bearings.push((Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360);
+        lengths.push(length);
+      }
+      return { bearings, lengths, totalLength: lengths.reduce((sum, length) => sum + length, 0) };
+    }
+
+    function sampleBearings(parts, sampleCount = 14) {
+      if (!parts.bearings.length || parts.totalLength <= 0) return [];
+      const samples = [];
+      let currentLength = 0;
+      let segmentIndex = 0;
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+        const target = (sampleIndex / Math.max(1, sampleCount - 1)) * parts.totalLength;
+        while (segmentIndex < parts.lengths.length - 1 && currentLength + parts.lengths[segmentIndex] < target) {
+          currentLength += parts.lengths[segmentIndex];
+          segmentIndex += 1;
+        }
+        samples.push(parts.bearings[segmentIndex]);
+      }
+      return samples;
+    }
+
+    function angleDelta(left, right) {
+      return Math.abs((left - right + 180) % 360 - 180);
+    }
+
+    function bearingTracePenalty(queryStroke, roadCoords, rotation) {
+      if (!queryStroke || queryStroke.length < 2 || !roadCoords || roadCoords.length < 2) return null;
+      const queryPoints = queryStroke.map((point) => [point.x, point.y]);
+      const querySamples = sampleBearings(polylineParts(queryPoints, false));
+      if (!querySamples.length) return null;
+      const centerLat = roadCoords.reduce((sum, coord) => sum + coord[0], 0) / roadCoords.length;
+      const latScale = 111320;
+      const lonScale = 111320 * Math.cos(centerLat * Math.PI / 180);
+      const roadPoints = roadCoords.map((coord) => [coord[1] * lonScale, coord[0] * latScale]);
+      let best = 180;
+      const rotatedQuery = querySamples.map((angle) => (angle + rotation) % 360);
+      for (const candidatePoints of [roadPoints, [...roadPoints].reverse()]) {
+        const candidateSamples = sampleBearings(polylineParts(candidatePoints, true));
+        if (!candidateSamples.length || candidateSamples.length !== rotatedQuery.length) continue;
+        const penalty = rotatedQuery.reduce((sum, angle, index) => (
+          sum + angleDelta(angle, candidateSamples[index])
+        ), 0) / rotatedQuery.length;
+        best = Math.min(best, penalty);
+      }
+      return best / 2;
+    }
+
+    function compareSelectedRoad() {
+      if (!selectedDevRoad) {
+        patternStatusEl.textContent = 'Enable Dev select road, then click a visible road first.';
+        return;
+      }
+      const payloadStrokes = searchPayloadStrokes();
+      const drawingGeometry = drawingCompareGeometry(payloadStrokes);
+      const roadGeometry = roadCompareGeometry(selectedDevRoad);
+      if (!drawingGeometry.length || !roadGeometry.length) {
+        patternStatusEl.textContent = 'Draw a pattern and select a road before comparing.';
+        return;
+      }
+      const rotationStep = preciseRotationEl.checked ? 10 : 90;
+      const rotations = freeRotationEl.checked ? Array.from({ length: 360 / rotationStep }, (_value, index) => index * rotationStep) : [0];
+      const comparisons = rotations.map((rotation) => {
+        const distance = patchDistance(rotatePolylines(drawingGeometry, rotation), roadGeometry);
+        const patchPenalty = distance * 180;
+        const tracePenalty = payloadStrokes.length === 1 ? bearingTracePenalty(payloadStrokes[0], selectedDevRoad.coords, rotation) : null;
+        const shapePenalty = tracePenalty === null ? patchPenalty : Math.min(patchPenalty, tracePenalty);
+        return {
+          rotation,
+          patchPenalty: Number(patchPenalty.toFixed(3)),
+          bearingTracePenalty: tracePenalty === null ? null : Number(tracePenalty.toFixed(3)),
+          shapePenalty: Number(shapePenalty.toFixed(3)),
+          score: Number(Math.max(0, 100 - shapePenalty).toFixed(1))
+        };
+      });
+      comparisons.sort((left, right) => right.score - left.score);
+      lastRoadCompareExport = {
+        exportedAt: new Date().toISOString(),
+        appMode: 'OSM Pattern Explorer dev road compare',
+        request: {
+          strokes: payloadStrokes,
+          rawStrokes: patternStrokes,
+          rotationInvariant: freeRotationEl.checked,
+          rotationStep,
+          roadGroups: selectedRoadGroups()
+        },
+        selectedRoad: selectedDevRoad,
+        normalized: {
+          drawing: drawingGeometry,
+          road: roadGeometry
+        },
+        comparison: {
+          best: comparisons[0],
+          rotations: comparisons
+        },
+        annotation: {
+          notes: ''
+        }
+      };
+      patternStatusEl.textContent = `Selected road compare: ${comparisons[0].score}% at ${comparisons[0].rotation} deg. Export it if this route is the target.`;
+      return lastRoadCompareExport;
+    }
+
+    function exportSelectedRoad() {
+      if (!selectedDevRoad) {
+        patternStatusEl.textContent = 'Enable Dev select road, then click a visible road first.';
+        return;
+      }
+      const exportData = lastRoadCompareExport || compareSelectedRoad() || {
+        exportedAt: new Date().toISOString(),
+        appMode: 'OSM Pattern Explorer dev road export',
+        selectedRoad: selectedDevRoad,
+        normalized: {
+          road: roadCompareGeometry(selectedDevRoad)
+        },
+        annotation: {
+          notes: ''
+        }
+      };
+      downloadJson('selected-road-compare', exportData);
+      patternStatusEl.textContent = 'Selected road JSON exported.';
+    }
+
     function renderPatternResults() {
       patternResultsLayer.clearLayers();
       patternResultsEl.innerHTML = '';
@@ -1022,6 +1365,112 @@ WEB_APP_HTML = r"""<!doctype html>
       setTimeout(() => map.invalidateSize(), 0);
     }
 
+    function normalizeRotation(value) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed)) return 0;
+      return ((parsed % 360) + 360) % 360;
+    }
+
+    function baseMapPaneTransform() {
+      const transform = map._mapPane.style.transform || '';
+      return transform.replace(/\s*rotate\([^)]*\)/g, '').trim();
+    }
+
+    function applyMapPaneRotation() {
+      if (!map._mapPane) return;
+      const rotation = currentMapRotation();
+      const baseTransform = baseMapPaneTransform();
+      const panePosition = map._getMapPanePos ? map._getMapPanePos() : L.DomUtil.getPosition(map._mapPane);
+      const size = map.getSize();
+      const originX = size.x / 2 - panePosition.x;
+      const originY = size.y / 2 - panePosition.y;
+
+      map._mapPane.style.transformOrigin = `${originX}px ${originY}px`;
+      map._mapPane.style.transform = rotation
+        ? `${baseTransform} rotate(${rotation}deg)`.trim()
+        : baseTransform;
+      mapEl.classList.toggle('map-rotated', rotation !== 0);
+    }
+
+    function refreshRotationTiles() {
+      map.invalidateSize({ pan: false });
+      tileLayer.redraw();
+      const size = map.getSize();
+      const overscan = Math.ceil(Math.max(size.x, size.y) * 0.25);
+      map.panBy([overscan, 0], { animate: false });
+      map.panBy([-overscan, 0], { animate: false });
+      map.panBy([0, overscan], { animate: false });
+      map.panBy([0, -overscan], { animate: false });
+      applyMapPaneRotation();
+    }
+
+    function setMapRotation(degrees, refreshTiles = true) {
+      const normalized = normalizeRotation(degrees);
+      mapRotationEl.value = String(normalized);
+      mapRotationNumberEl.value = String(normalized);
+      mapEl.style.setProperty('--map-rotation', `${normalized}deg`);
+      applyMapPaneRotation();
+      if (refreshTiles) {
+        setTimeout(() => {
+          refreshRotationTiles();
+        }, 0);
+      }
+    }
+
+    function setMapRotationControls(enabled) {
+      mapRotationControlsEl.classList.toggle('active', enabled);
+      document.getElementById('toggleMapRotation').textContent = enabled ? 'Hide rotation' : 'Rotate map';
+      if (enabled) {
+        setTimeout(refreshRotationTiles, 0);
+      }
+      if (!enabled) {
+        dragMapRotationEl.checked = false;
+        setDragMapRotation(false);
+        setMapRotation(0);
+      }
+    }
+
+    function mapPointerAngle(event) {
+      const rect = mapEl.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      return (Math.atan2(event.clientY - centerY, event.clientX - centerX) * 180 / Math.PI + 360) % 360;
+    }
+
+    function currentMapRotation() {
+      return normalizeRotation(mapRotationEl.value);
+    }
+
+    function setDragMapRotation(enabled) {
+      mapEl.classList.toggle('rotate-drag-enabled', enabled);
+      if (enabled) {
+        map.dragging.disable();
+      } else {
+        isDraggingMapRotation = false;
+        map.dragging.enable();
+      }
+    }
+
+    function startMapRotationDrag(event) {
+      if (!dragMapRotationEl.checked) return;
+      event.preventDefault();
+      isDraggingMapRotation = true;
+      mapRotationDragOffset = currentMapRotation() - mapPointerAngle(event);
+    }
+
+    function continueMapRotationDrag(event) {
+      if (!isDraggingMapRotation) return;
+      event.preventDefault();
+      setMapRotation(mapPointerAngle(event) + mapRotationDragOffset, false);
+    }
+
+    function stopMapRotationDrag() {
+      if (isDraggingMapRotation) {
+        setMapRotation(currentMapRotation(), true);
+      }
+      isDraggingMapRotation = false;
+    }
+
     function setPatternFocus(enabled) {
       document.body.classList.toggle('pattern-focus', enabled);
       document.getElementById('focusPattern').textContent = enabled ? 'Small drawing' : 'Large drawing';
@@ -1116,13 +1565,17 @@ WEB_APP_HTML = r"""<!doctype html>
         return;
       }
       const payloadStrokes = searchPayloadStrokes();
-      patternStatusEl.textContent = 'Searching similar road patterns...';
+      const rotationStep = preciseRotationEl.checked ? 10 : 90;
+      patternStatusEl.textContent = preciseRotationEl.checked
+        ? 'Searching similar road patterns with 10 deg rotation. This can take about a minute...'
+        : 'Searching similar road patterns...';
       const response = await fetch('/api/pattern-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           strokes: payloadStrokes,
           rotationInvariant: freeRotationEl.checked,
+          rotationStep,
           roadGroups
         })
       });
@@ -1139,6 +1592,7 @@ WEB_APP_HTML = r"""<!doctype html>
           rawStrokes: patternStrokes,
           smoothStrokeIndexes: patternStrokes.map((stroke, index) => smoothPatternStrokes.has(stroke) ? index : null).filter((index) => index !== null),
           rotationInvariant: freeRotationEl.checked,
+          rotationStep,
           roadGroups
         },
         response: results,
@@ -1223,7 +1677,7 @@ WEB_APP_HTML = r"""<!doctype html>
             weight: 1,
             fillColor: '#9ecae1',
             fillOpacity: 0.22
-          }), item).addTo(areasLayer);
+          }), item, type).addTo(areasLayer);
           return;
         }
         if (type === 'road') {
@@ -1232,7 +1686,7 @@ WEB_APP_HTML = r"""<!doctype html>
             color: item.color || '#555',
             weight: 4,
             opacity: 0.92
-          }), item).addTo(roadsLayer);
+          }), item, type).addTo(roadsLayer);
           return;
         }
         const icon = L.divIcon({
@@ -1242,7 +1696,7 @@ WEB_APP_HTML = r"""<!doctype html>
           iconAnchor: [12, 12],
           popupAnchor: [0, -12]
         });
-        bindFeature(L.marker(item.coords, { icon }), item).addTo(pointsLayer);
+        bindFeature(L.marker(item.coords, { icon }), item, type).addTo(pointsLayer);
       }
 
       drawChunk(allVisible, 0, 300, drawEntry, () => {
@@ -1277,6 +1731,18 @@ WEB_APP_HTML = r"""<!doctype html>
 
     document.getElementById('fit').addEventListener('click', fitMap);
     document.getElementById('focusMap').addEventListener('click', () => setMapFocus(true));
+    document.getElementById('toggleMapRotation').addEventListener('click', () => {
+      setMapRotationControls(!mapRotationControlsEl.classList.contains('active'));
+    });
+    mapRotationEl.addEventListener('input', () => setMapRotation(mapRotationEl.value));
+    mapRotationNumberEl.addEventListener('change', () => setMapRotation(mapRotationNumberEl.value));
+    dragMapRotationEl.addEventListener('change', () => setDragMapRotation(dragMapRotationEl.checked));
+    document.getElementById('resetMapRotation').addEventListener('click', () => setMapRotation(0));
+    mapEl.addEventListener('pointerdown', startMapRotationDrag);
+    window.addEventListener('pointermove', continueMapRotationDrag);
+    window.addEventListener('pointerup', stopMapRotationDrag);
+    window.addEventListener('pointercancel', stopMapRotationDrag);
+    map.on('move zoom zoomend moveend resize', applyMapPaneRotation);
     document.getElementById('uncheckAllLayers').addEventListener('click', () => setAllLayers(false));
     document.getElementById('checkAllLayers').addEventListener('click', () => setAllLayers(true));
     mapFocusToggleEl.addEventListener('click', () => setMapFocus(!document.body.classList.contains('map-focus')));
@@ -1305,6 +1771,13 @@ WEB_APP_HTML = r"""<!doctype html>
       });
     });
     document.getElementById('exportPatternSearch').addEventListener('click', exportPatternSearch);
+    document.getElementById('compareSelectedRoad').addEventListener('click', compareSelectedRoad);
+    document.getElementById('exportSelectedRoad').addEventListener('click', exportSelectedRoad);
+    devRoadSelectEl.addEventListener('change', () => {
+      patternStatusEl.textContent = devRoadSelectEl.checked
+        ? 'Dev road selection enabled. Keep Roads checked, then click a visible road.'
+        : 'Dev road selection disabled.';
+    });
     document.getElementById('photoInput').addEventListener('change', (event) => {
       const file = event.target.files[0];
       if (!file) return;
@@ -1321,7 +1794,14 @@ WEB_APP_HTML = r"""<!doctype html>
     patternCanvas.addEventListener('pointercancel', stopPatternPaint);
     new ResizeObserver(drawPatternCanvas).observe(patternCanvas);
     filterEl.addEventListener('input', redraw);
-    roadsEl.addEventListener('change', redraw);
+    roadsEl.addEventListener('change', () => {
+      if (!roadsEl.checked) {
+        selectedDevRoad = null;
+        lastRoadCompareExport = null;
+        devRoadSelectionLayer.clearLayers();
+      }
+      redraw();
+    });
     areasEl.addEventListener('change', redraw);
     drawPatternCanvas();
 
@@ -1402,6 +1882,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
                     "strokes": request_json.get("strokes", []),
                 },
                 rotation_invariant=bool(request_json.get("rotationInvariant", True)),
+                rotation_step_degrees=int(request_json.get("rotationStep", 90)),
                 allowed_road_groups=request_json.get("roadGroups", []),
             )
         except Exception as exc:

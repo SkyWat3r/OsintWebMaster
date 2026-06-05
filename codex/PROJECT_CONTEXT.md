@@ -32,7 +32,7 @@ Important behavior to preserve:
 - Smoothed strokes are rendered as quadratic curves and sampled into denser point lists before `/api/pattern-search`.
 - The UI no longer shows old black graph points during normal freehand drawing. Points still exist internally to encode strokes.
 - The pattern canvas stores normalized coordinates and uses a fixed internal 340:230 drawing viewport, so `Large drawing` should not stretch the trace.
-- `/api/pattern-search` accepts `strokes`, `roadGroups`, and `rotationInvariant`.
+- `/api/pattern-search` accepts `strokes`, `roadGroups`, `rotationInvariant`, and `rotationStep`.
 - Road group filters are available for pattern matching: roads, highways, paths/tracks, and service roads.
 - Search results are ranked in a `Best matches` panel. Clicking a result zooms the map, highlights candidate paths, shows the score, and displays a Google Maps link with coordinates at the bottom of the window.
 - `Export search` downloads a JSON payload with normalized/smoothed strokes, road-group filters, rotation mode, ranked matches, selected match, paths, and metrics. Use these exports for calibration when the user identifies the correct match.
@@ -42,15 +42,21 @@ Important behavior to preserve:
   - `linear-trace`: fallback for old single continuous point/edge drawings.
   - intersection/branch matching: fallback for old graph-style drawings.
 - `road-layer-window` results have `source: visible-road` and their `paths` are actual OSM road-line windows that can be highlighted on the map.
-- `road-layer-window` metrics include `patchPenalty`, `pathLengthMeters`, `windowPoints`, `querySegments`, and `matcher`.
+- `road-layer-window` metrics include `patchPenalty`, `bearingTracePenalty`, `shapePenalty`, `pathLengthMeters`, `windowPoints`, `querySegments`, and `matcher`.
 - Calibration exports are kept locally under `tests/` and ignored by Git. Filenames can indicate the correct result rank, e.g. `number5.json`; `not_found.json` means the correct route was absent from the ranked list.
 - Calibration from `tests/number5.json` and `tests/numer12.json` added visible-road result dedupe by OSM way id, long/short window length penalties, cheaper sampling, and reduced fallback priority.
 - Measured calibration result after this pass: `number5` correct match moved from rank 5 to rank 3; `numer12` moved from rank 12 to rank 9; `not_found` remained not found.
+- Calibration from `tests/pattern-search-didnt-found.json` plus `tests/selected-road-compare-2026-06-05T12-22-30-624Z.json` showed the correct route was present and tested but ranked too low because nearest-segment patch scoring was too permissive for simple curves.
+- `road-layer-window` now adds a bearing trace comparison for single-stroke route drawings. It samples successive travel directions along the drawing and OSM road window, tests allowed rotations and reversed OSM direction, then uses the better of patch penalty and bearing-trace penalty as `shapePenalty`.
+- Measured calibration result for that case: selected OSM way `1309093058` moved from absent in top results to rank 1 at 93.8%.
 - `network-patch` metrics include `patchPenalty`, `strokeCountPenalty`, `candidateDegree`, and `matcher`.
 - `network-patch` normalizes query and candidate patches by translation/scale, tests coarse rotations when `Free rotation` is enabled, then scores with bidirectional nearest-segment distance.
 - Patch search is prefiltered by road group, branch count, and coarse stroke/candidate angles before running the heavier geometric score.
 - `Free rotation` compares relative branch angles so the pattern does not need to be north-aligned.
 - The web UI has a `Full map` mode that hides the control panel until the user reopens it.
+- The web UI has a visual `Rotate map` mode with a 0-359 degree slider, numeric input, and `Drag rotate` toggle. It rotates Leaflet map panes around the center for visual alignment/tracing, but OSM coordinates and backend searches remain unrotated.
+- Map rotation increases tile/canvas render buffer and runs a symmetric overscan pan refresh to reduce blank corners after rotating. It is still a visual Leaflet workaround, not a native rotated-map projection.
+- Rotation must be applied to Leaflet's whole `mapPane` while preserving Leaflet's own translate transform; rotating individual panes made rotation originate from the top-left and caused bad zoom behavior.
 - Map road/area/point layers start unchecked; `Check all` and `Uncheck all` toggle them together.
 - The pattern canvas has a `Large drawing` mode for precise tracing without changing stored coordinates.
 

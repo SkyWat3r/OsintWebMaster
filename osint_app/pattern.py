@@ -8,7 +8,8 @@ LINEAR_MIN_SCORE = 60
 FREE_TRACE_MIN_SCORE = 45
 PATCH_TRACE_MIN_SCORE = 55
 LINEAR_SAMPLES = 14
-PATCH_ROTATION_STEP_DEGREES = 90
+DEFAULT_ROTATION_STEP_DEGREES = 90
+PRECISE_ROTATION_STEP_DEGREES = 10
 PATCH_SAMPLE_POINTS = 12
 PATCH_CANDIDATE_LIMIT = 300
 ROAD_WINDOW_MIN_POINTS = 4
@@ -20,6 +21,7 @@ ROAD_WINDOW_SOFT_MAX_METERS = 350
 ROAD_WINDOW_SOFT_MIN_METERS = 100
 ROAD_WINDOW_LENGTH_PENALTY_DIVISOR = 35
 ROAD_WINDOW_SHORT_PENALTY_DIVISOR = 25
+ROAD_BEARING_TRACE_PENALTY_DIVISOR = 2
 NETWORK_PATCH_FALLBACK_PENALTY = 6
 RESULT_DEDUPE_METERS = 90
 STROKE_MERGE_DISTANCE = 0.015
@@ -483,8 +485,9 @@ def _best_patch_distance(
     query_polylines: list[list[tuple[float, float]]],
     candidate_polylines: list[list[tuple[float, float]]],
     rotation_invariant: bool,
+    rotation_step_degrees: int = DEFAULT_ROTATION_STEP_DEGREES,
 ) -> float:
-    rotations = range(0, 360, PATCH_ROTATION_STEP_DEGREES) if rotation_invariant else (0,)
+    rotations = range(0, 360, rotation_step_degrees) if rotation_invariant else (0,)
     return min(_patch_distance(_rotate_polylines(query_polylines, rotation), candidate_polylines) for rotation in rotations)
 
 
@@ -499,9 +502,16 @@ def _prepared_patch(polylines: list[list[tuple[float, float]]]) -> dict:
 def _prepared_query_rotations(
     query_polylines: list[list[tuple[float, float]]],
     rotation_invariant: bool,
+    rotation_step_degrees: int,
 ) -> list[dict]:
-    rotations = range(0, 360, PATCH_ROTATION_STEP_DEGREES) if rotation_invariant else (0,)
+    rotations = range(0, 360, rotation_step_degrees) if rotation_invariant else (0,)
     return [_prepared_patch(_rotate_polylines(query_polylines, rotation)) for rotation in rotations]
+
+
+def _normalized_rotation_step(rotation_step_degrees: int | None) -> int:
+    if not rotation_step_degrees:
+        return DEFAULT_ROTATION_STEP_DEGREES
+    return min(DEFAULT_ROTATION_STEP_DEGREES, max(PRECISE_ROTATION_STEP_DEGREES, int(rotation_step_degrees)))
 
 
 def _patch_distance_prepared(query_patch: dict, candidate_patch: dict) -> float:
@@ -512,6 +522,55 @@ def _patch_distance_prepared(query_patch: dict, candidate_patch: dict) -> float:
 
 def _best_prepared_patch_distance(query_patches: list[dict], candidate_patch: dict) -> float:
     return min(_patch_distance_prepared(query_patch, candidate_patch) for query_patch in query_patches)
+
+
+def _sample_bearings(parts: dict, sample_count: int = LINEAR_SAMPLES) -> list[float]:
+    bearings = parts["bearings"]
+    lengths = parts["lengths"]
+    total_length = parts["totalLength"]
+    if not bearings or total_length <= 0:
+        return []
+
+    samples = []
+    current_length = 0.0
+    segment_index = 0
+    for sample_index in range(sample_count):
+        target = (sample_index / max(1, sample_count - 1)) * total_length
+        while segment_index < len(lengths) - 1 and current_length + lengths[segment_index] < target:
+            current_length += lengths[segment_index]
+            segment_index += 1
+        samples.append(bearings[segment_index])
+    return samples
+
+
+def _bearing_trace_penalty(
+    pattern_strokes: list[list[dict]],
+    candidate_points: list[list[float]],
+    rotation_invariant: bool,
+    rotation_step_degrees: int,
+) -> float | None:
+    if len(pattern_strokes) != 1 or len(pattern_strokes[0]) < 2 or len(candidate_points) < 2:
+        return None
+
+    query_parts = _polyline_parts(pattern_strokes[0], geo=False)
+    query_samples = _sample_bearings(query_parts)
+    if not query_samples:
+        return None
+
+    rotations = range(0, 360, rotation_step_degrees) if rotation_invariant else (0,)
+    best = 180.0
+    for rotation in rotations:
+        rotated_query = [(angle + rotation) % 360 for angle in query_samples]
+        for points in (candidate_points, list(reversed(candidate_points))):
+            candidate_samples = _sample_bearings(_polyline_parts(points, geo=True))
+            if len(rotated_query) != len(candidate_samples) or not candidate_samples:
+                continue
+            penalty = sum(
+                _angle_delta(rotated_query[index], candidate_samples[index])
+                for index in range(len(rotated_query))
+            ) / len(rotated_query)
+            best = min(best, penalty)
+    return best / ROAD_BEARING_TRACE_PENALTY_DIVISOR
 
 
 def build_road_pattern_index(data: dict) -> dict:
@@ -782,16 +841,19 @@ def search_road_pattern(
     pattern: dict,
     *,
     rotation_invariant: bool = True,
+    rotation_step_degrees: int = DEFAULT_ROTATION_STEP_DEGREES,
     limit: int = 25,
     allowed_road_groups: list[str] | None = None,
 ) -> dict:
     allowed_groups = set(allowed_road_groups or [])
+    rotation_step_degrees = _normalized_rotation_step(rotation_step_degrees)
     stroke_patterns = _stroke_patterns(pattern)
     if stroke_patterns:
         return _search_visible_road_patterns(
             index,
             stroke_patterns,
             rotation_invariant=rotation_invariant,
+            rotation_step_degrees=rotation_step_degrees,
             limit=limit,
             allowed_groups=allowed_groups,
         )
@@ -865,6 +927,7 @@ def _search_visible_road_patterns(
     stroke_patterns: list[list[dict]],
     *,
     rotation_invariant: bool,
+    rotation_step_degrees: int,
     limit: int,
     allowed_groups: set[str] | None,
 ) -> dict:
@@ -874,11 +937,12 @@ def _search_visible_road_patterns(
             index,
             stroke_patterns,
             rotation_invariant=rotation_invariant,
+            rotation_step_degrees=rotation_step_degrees,
             limit=limit,
             allowed_groups=allowed_groups,
         )
 
-    query_patches = _prepared_query_rotations(query_patch, rotation_invariant)
+    query_patches = _prepared_query_rotations(query_patch, rotation_invariant, rotation_step_degrees)
     query_segment_count = sum(max(0, len(stroke) - 1) for stroke in stroke_patterns)
     query_turns = _stroke_total_turns(stroke_patterns)
     candidates = []
@@ -896,10 +960,17 @@ def _search_visible_road_patterns(
             if not candidate_patch["segments"]:
                 continue
             patch_penalty = _best_prepared_patch_distance(query_patches, candidate_patch) * 180
+            bearing_trace_penalty = _bearing_trace_penalty(
+                stroke_patterns,
+                window,
+                rotation_invariant,
+                rotation_step_degrees,
+            )
+            shape_penalty = min(patch_penalty, bearing_trace_penalty) if bearing_trace_penalty is not None else patch_penalty
             path_length = _path_length_meters(window)
             length_penalty = max(0.0, path_length - ROAD_WINDOW_SOFT_MAX_METERS) / ROAD_WINDOW_LENGTH_PENALTY_DIVISOR
             short_length_penalty = max(0.0, ROAD_WINDOW_SOFT_MIN_METERS - path_length) / ROAD_WINDOW_SHORT_PENALTY_DIVISOR
-            score = max(0.0, 100.0 - patch_penalty - length_penalty - short_length_penalty)
+            score = max(0.0, 100.0 - shape_penalty - length_penalty - short_length_penalty)
             if score < ROAD_LAYER_MIN_SCORE:
                 continue
             candidates.append(
@@ -915,6 +986,8 @@ def _search_visible_road_patterns(
                     "source": "visible-road",
                     "metrics": {
                         "patchPenalty": round(patch_penalty, 3),
+                        "bearingTracePenalty": round(bearing_trace_penalty, 3) if bearing_trace_penalty is not None else None,
+                        "shapePenalty": round(shape_penalty, 3),
                         "lengthPenalty": round(length_penalty, 3),
                         "shortLengthPenalty": round(short_length_penalty, 3),
                         "pathLengthMeters": round(path_length, 1),
@@ -932,6 +1005,7 @@ def _search_visible_road_patterns(
             index,
             stroke_patterns,
             rotation_invariant=rotation_invariant,
+            rotation_step_degrees=rotation_step_degrees,
             limit=limit,
             allowed_groups=allowed_groups,
         )
@@ -947,6 +1021,7 @@ def _search_visible_road_patterns(
             "branchTurns": [],
             "mode": "road-layer-window",
             "rotationInvariant": rotation_invariant,
+            "rotationStepDegrees": rotation_step_degrees if rotation_invariant else 0,
         },
         "matches": _dedupe_nearby_matches(candidates, limit),
     }
@@ -957,6 +1032,7 @@ def _search_stroke_patterns(
     stroke_patterns: list[list[dict]],
     *,
     rotation_invariant: bool,
+    rotation_step_degrees: int = DEFAULT_ROTATION_STEP_DEGREES,
     limit: int,
     allowed_groups: set[str] | None,
 ) -> dict:
@@ -973,7 +1049,7 @@ def _search_stroke_patterns(
             "matches": [],
         }
 
-    query_patches = _prepared_query_rotations(query_patch, rotation_invariant)
+    query_patches = _prepared_query_rotations(query_patch, rotation_invariant, rotation_step_degrees)
     stroke_angles = _stroke_overall_angles(stroke_patterns)
     candidates = []
     candidate_items = [
@@ -1026,6 +1102,7 @@ def _search_stroke_patterns(
             "branchTurns": [],
             "mode": "network-patch",
             "rotationInvariant": rotation_invariant,
+            "rotationStepDegrees": rotation_step_degrees if rotation_invariant else 0,
         },
         "matches": _dedupe_nearby_matches(candidates, limit),
     }

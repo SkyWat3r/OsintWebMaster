@@ -167,6 +167,7 @@ class OsmInfoApp(tk.Tk):
         self,
         pattern: dict,
         rotation_invariant: bool = True,
+        rotation_step_degrees: int = 90,
         allowed_road_groups: list[str] | None = None,
     ) -> dict:
         if self.pattern_index_cache is None:
@@ -176,6 +177,7 @@ class OsmInfoApp(tk.Tk):
             self.pattern_index_cache,
             pattern,
             rotation_invariant=rotation_invariant,
+            rotation_step_degrees=rotation_step_degrees,
             allowed_road_groups=allowed_road_groups,
         )
 

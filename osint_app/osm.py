@@ -183,6 +183,10 @@ def build_map_payload(data: dict) -> dict:
                 continue
             roads.append(
                 {
+                    "osmType": element_type,
+                    "osmId": element.get("id"),
+                    "highway": tags.get("highway"),
+                    "tags": tags,
                     "coords": coords,
                     "name": element_name(element),
                     "category": element_category(element),
