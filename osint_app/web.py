@@ -467,6 +467,7 @@ WEB_APP_HTML = r"""<!doctype html>
             <button id="straightPatternStroke">Straight corners</button>
             <button id="clearPattern">Clear</button>
             <button id="searchPattern">Search</button>
+            <button id="exportPatternSearch">Export search</button>
             <button id="focusPattern">Large drawing</button>
             <button id="finishAngleStroke">Finish line</button>
           </div>
@@ -520,6 +521,7 @@ WEB_APP_HTML = r"""<!doctype html>
     let draggedPatternPoint = null;
     let patternMatches = [];
     let selectedPatternMatchIndex = -1;
+    let lastPatternSearchExport = null;
     const enabledPointKinds = new Set();
     const patternStrokes = [];
     const smoothPatternStrokes = new WeakSet();
@@ -800,6 +802,7 @@ WEB_APP_HTML = r"""<!doctype html>
     function clearPattern() {
       patternStrokes.length = 0;
       patternMatches = [];
+      lastPatternSearchExport = null;
       selectedPatternMatchIndex = -1;
       isPaintingPattern = false;
       activePatternStroke = null;
@@ -895,6 +898,31 @@ WEB_APP_HTML = r"""<!doctype html>
 
     function selectedRoadGroups() {
       return roadGroupInputs.filter((input) => input.checked).map((input) => input.dataset.roadGroup);
+    }
+
+    function searchPayloadStrokes() {
+      return patternStrokes.map(smoothStrokePoints);
+    }
+
+    function exportPatternSearch() {
+      if (!lastPatternSearchExport) {
+        patternStatusEl.textContent = 'Run a search before exporting.';
+        return;
+      }
+      lastPatternSearchExport.selectedMatchIndex = selectedPatternMatchIndex;
+      lastPatternSearchExport.selectedMatch = patternMatches[selectedPatternMatchIndex] || null;
+      const body = JSON.stringify(lastPatternSearchExport, null, 2);
+      const blob = new Blob([body], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.href = url;
+      link.download = `pattern-search-${timestamp}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      patternStatusEl.textContent = 'Pattern search exported. Tell Codex which result is correct.';
     }
 
     function renderPatternResults() {
@@ -1087,12 +1115,13 @@ WEB_APP_HTML = r"""<!doctype html>
         patternStatusEl.textContent = 'Select at least one road type before searching.';
         return;
       }
+      const payloadStrokes = searchPayloadStrokes();
       patternStatusEl.textContent = 'Searching similar road patterns...';
       const response = await fetch('/api/pattern-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          strokes: patternStrokes.map(smoothStrokePoints),
+          strokes: payloadStrokes,
           rotationInvariant: freeRotationEl.checked,
           roadGroups
         })
@@ -1101,7 +1130,26 @@ WEB_APP_HTML = r"""<!doctype html>
         patternStatusEl.textContent = await response.text();
         return;
       }
-      showPatternResults(await response.json());
+      const results = await response.json();
+      lastPatternSearchExport = {
+        exportedAt: new Date().toISOString(),
+        appMode: 'OSM Pattern Explorer',
+        request: {
+          strokes: payloadStrokes,
+          rawStrokes: patternStrokes,
+          smoothStrokeIndexes: patternStrokes.map((stroke, index) => smoothPatternStrokes.has(stroke) ? index : null).filter((index) => index !== null),
+          rotationInvariant: freeRotationEl.checked,
+          roadGroups
+        },
+        response: results,
+        selectedMatchIndex: -1,
+        selectedMatch: null,
+        annotation: {
+          correctMatchIndex: null,
+          notes: ''
+        }
+      };
+      showPatternResults(results);
     }
 
     function buildPointFilters() {
@@ -1256,6 +1304,7 @@ WEB_APP_HTML = r"""<!doctype html>
         patternStatusEl.textContent = 'Pattern search failed: ' + error.message;
       });
     });
+    document.getElementById('exportPatternSearch').addEventListener('click', exportPatternSearch);
     document.getElementById('photoInput').addEventListener('change', (event) => {
       const file = event.target.files[0];
       if (!file) return;

@@ -35,12 +35,15 @@ Important behavior to preserve:
 - `/api/pattern-search` accepts `strokes`, `roadGroups`, and `rotationInvariant`.
 - Road group filters are available for pattern matching: roads, highways, paths/tracks, and service roads.
 - Search results are ranked in a `Best matches` panel. Clicking a result zooms the map, highlights candidate paths, shows the score, and displays a Google Maps link with coordinates at the bottom of the window.
+- `Export search` downloads a JSON payload with normalized/smoothed strokes, road-group filters, rotation mode, ranked matches, selected match, paths, and metrics. Use these exports for calibration when the user identifies the correct match.
 - Current pattern engine has three modes:
   - `road-layer-window`: used first for current stroke-based UI input. Matches drawn strokes against the same OSM highway ways displayed in the Leaflet road layer, including sliding windows over long roads.
   - `network-patch`: used for current stroke-based UI input. Compares all drawn strokes globally against normalized local OSM road-network patches.
   - `linear-trace`: fallback for old single continuous point/edge drawings.
   - intersection/branch matching: fallback for old graph-style drawings.
 - `road-layer-window` results have `source: visible-road` and their `paths` are actual OSM road-line windows that can be highlighted on the map.
+- `road-layer-window` metrics include `patchPenalty`, `pathLengthMeters`, `windowPoints`, `querySegments`, and `matcher`.
+- `network-patch` metrics include `patchPenalty`, `strokeCountPenalty`, `candidateDegree`, and `matcher`.
 - `network-patch` normalizes query and candidate patches by translation/scale, tests coarse rotations when `Free rotation` is enabled, then scores with bidirectional nearest-segment distance.
 - Patch search is prefiltered by road group, branch count, and coarse stroke/candidate angles before running the heavier geometric score.
 - `Free rotation` compares relative branch angles so the pattern does not need to be north-aligned.

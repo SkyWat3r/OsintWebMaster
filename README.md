@@ -21,6 +21,7 @@ The web map includes a first road-pattern search mode:
 - use `Add midpoint`, `Smooth curve`, and `Straight corners` to refine rounded roads before searching;
 - optionally import a photo as the canvas background and trace the road shape manually;
 - use `Search` to find similar road intersections in the loaded OSM data.
+- use `Export search` after a search to save the query, ranked matches, selected result, paths, and score metrics as JSON for calibration.
 
 Stroke drawings first use a `road-layer-window` matcher against the same OSM highway ways displayed as road lines on the map, including sliding windows on long routes. It then falls back to `network-patch`, which compares the whole traced shape against normalized local OSM road-network patches with optional rotation. Smoothed curves are sampled into denser strokes before matching. Older point/edge drawings still fall back to `linear-trace` or intersection matching. Points with two connected segments are treated as bends. Points with three or more connected segments are treated as intersections. `Free rotation` keeps the search independent from absolute north/south orientation.
 

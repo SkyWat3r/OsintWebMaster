@@ -880,6 +880,13 @@ def _search_visible_road_patterns(
                     "branchTurns": [],
                     "paths": [window],
                     "source": "visible-road",
+                    "metrics": {
+                        "patchPenalty": round(patch_penalty, 3),
+                        "pathLengthMeters": round(_path_length_meters(window), 1),
+                        "windowPoints": len(window),
+                        "querySegments": query_segment_count,
+                        "matcher": "road-layer-window",
+                    },
                 }
             )
         if checked > ROAD_LAYER_CANDIDATE_LIMIT:
@@ -962,6 +969,13 @@ def _search_stroke_patterns(
                 "angles": [round(angle, 1) for angle in sorted(item["angles"])],
                 "branchTurns": [round(branch["turn"], 1) for branch in item["branches"]],
                 "paths": [branch["coords"] for branch in item["branches"] if len(branch.get("coords", [])) >= 2],
+                "source": "network-patch",
+                "metrics": {
+                    "patchPenalty": round(patch_penalty, 3),
+                    "strokeCountPenalty": round(stroke_count_penalty, 3),
+                    "candidateDegree": item["degree"],
+                    "matcher": "network-patch",
+                },
             }
         )
 
