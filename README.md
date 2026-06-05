@@ -20,7 +20,7 @@ The web map includes a first road-pattern search mode:
 - optionally import a photo as the canvas background and trace the road shape manually;
 - use `Search` to find similar road intersections in the loaded OSM data.
 
-Continuous road drawings use a stricter `linear-trace` matcher that compares the whole traced shape, limits duplicate nearby results, and returns fewer candidates. Points with two connected segments are treated as bends. Points with three or more connected segments are treated as intersections. `Free rotation` keeps the search independent from absolute north/south orientation.
+Stroke drawings use a `network-patch` matcher that compares the whole traced shape against normalized local OSM road-network patches with optional rotation. Older point/edge drawings still fall back to `linear-trace` or intersection matching. Points with two connected segments are treated as bends. Points with three or more connected segments are treated as intersections. `Free rotation` keeps the search independent from absolute north/south orientation.
 
 Map layers start unchecked. Use `Check all` / `Uncheck all` to quickly toggle roads, areas, and point layers. Use `Full map` to hide the control panel and inspect the map with the full browser viewport. Use `Large drawing` to expand the pattern canvas for more precise tracing.
 

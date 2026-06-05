@@ -6,7 +6,11 @@ MAX_TRACE_STEPS = 18
 MIN_SCORE = 25
 LINEAR_MIN_SCORE = 60
 FREE_TRACE_MIN_SCORE = 45
+PATCH_TRACE_MIN_SCORE = 55
 LINEAR_SAMPLES = 14
+PATCH_ROTATION_STEP_DEGREES = 90
+PATCH_SAMPLE_POINTS = 24
+PATCH_CANDIDATE_LIMIT = 300
 RESULT_DEDUPE_METERS = 90
 STROKE_MERGE_DISTANCE = 0.015
 RELATIVE_LENGTH_WEIGHT = 28
@@ -239,6 +243,211 @@ def _polyline_distance(pattern_points: list, candidate_points: list, rotation_in
     return best
 
 
+def _geo_to_xy(point: list[float], center: list[float]) -> tuple[float, float]:
+    lat_scale = 111_320
+    lon_scale = 111_320 * math.cos(math.radians(center[0]))
+    return ((point[1] - center[1]) * lon_scale, (point[0] - center[0]) * lat_scale)
+
+
+def _normalize_xy_polylines(polylines: list[list[tuple[float, float]]]) -> list[list[tuple[float, float]]]:
+    points = [point for polyline in polylines for point in polyline]
+    if not points:
+        return []
+
+    min_x = min(point[0] for point in points)
+    max_x = max(point[0] for point in points)
+    min_y = min(point[1] for point in points)
+    max_y = max(point[1] for point in points)
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    scale = max(max_x - min_x, max_y - min_y, 1e-9)
+
+    return [
+        [((point[0] - center_x) / scale, (point[1] - center_y) / scale) for point in polyline]
+        for polyline in polylines
+    ]
+
+
+def _stroke_patch_geometry(strokes: list[list[dict]]) -> list[list[tuple[float, float]]]:
+    polylines = [
+        [(point["x"], point["y"]) for point in stroke]
+        for stroke in strokes
+        if len(stroke) >= 2
+    ]
+    return _normalize_xy_polylines(polylines)
+
+
+def _stroke_overall_angles(strokes: list[list[dict]]) -> list[float]:
+    return [
+        _canvas_polyline_angle(stroke[0], stroke[-1])
+        for stroke in strokes
+        if len(stroke) >= 2
+    ]
+
+
+def _cheap_stroke_candidate_priority(stroke_angles: list[float], item: dict, rotation_invariant: bool) -> float:
+    degree_cost = abs(item["degree"] - len(stroke_angles)) * 18
+    if not stroke_angles or not item.get("angles"):
+        return degree_cost + 180
+
+    if rotation_invariant and len(stroke_angles) == len(item["angles"]):
+        angle_cost = _gap_distance(_relative_gaps(stroke_angles), item["gaps"])
+    else:
+        remaining = list(item["angles"])
+        total = 0.0
+        for angle in stroke_angles:
+            best = min(range(len(remaining)), key=lambda index: _angle_delta(angle, remaining[index]))
+            total += _angle_delta(angle, remaining.pop(best))
+            if not remaining:
+                break
+        angle_cost = total / len(stroke_angles)
+    return degree_cost + angle_cost
+
+
+def _candidate_patch_geometry(item: dict) -> list[list[tuple[float, float]]]:
+    center = item["coords"]
+    polylines = []
+    for branch in item.get("branches", []):
+        coords = branch.get("coords", [])
+        if len(coords) >= 2:
+            polylines.append([_geo_to_xy(point, center) for point in coords])
+    return _normalize_xy_polylines(polylines)
+
+
+def _polyline_length_xy(polyline: list[tuple[float, float]]) -> float:
+    return sum(
+        math.hypot(second[0] - first[0], second[1] - first[1])
+        for first, second in zip(polyline, polyline[1:])
+    )
+
+
+def _sample_xy_polylines(polylines: list[list[tuple[float, float]]], sample_count: int) -> list[tuple[float, float]]:
+    lengths = [_polyline_length_xy(polyline) for polyline in polylines]
+    total_length = sum(lengths)
+    if total_length <= 0:
+        return [point for polyline in polylines for point in polyline]
+
+    samples = []
+    for polyline, length in zip(polylines, lengths):
+        if length <= 0:
+            continue
+        count = max(2, round(sample_count * length / total_length))
+        segment_lengths = [
+            math.hypot(second[0] - first[0], second[1] - first[1])
+            for first, second in zip(polyline, polyline[1:])
+        ]
+        for sample_index in range(count):
+            target = (sample_index / max(1, count - 1)) * length
+            covered = 0.0
+            for segment_index, segment_length in enumerate(segment_lengths):
+                if covered + segment_length >= target or segment_index == len(segment_lengths) - 1:
+                    first = polyline[segment_index]
+                    second = polyline[segment_index + 1]
+                    ratio = 0.0 if segment_length <= 0 else (target - covered) / segment_length
+                    samples.append(
+                        (
+                            first[0] + (second[0] - first[0]) * ratio,
+                            first[1] + (second[1] - first[1]) * ratio,
+                        )
+                    )
+                    break
+                covered += segment_length
+    return samples
+
+
+def _xy_segments(polylines: list[list[tuple[float, float]]]) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    return [
+        (first, second)
+        for polyline in polylines
+        for first, second in zip(polyline, polyline[1:])
+    ]
+
+
+def _rotate_point(point: tuple[float, float], degrees: float) -> tuple[float, float]:
+    radians = math.radians(degrees)
+    cos_value = math.cos(radians)
+    sin_value = math.sin(radians)
+    return (
+        point[0] * cos_value - point[1] * sin_value,
+        point[0] * sin_value + point[1] * cos_value,
+    )
+
+
+def _rotate_polylines(polylines: list[list[tuple[float, float]]], degrees: float) -> list[list[tuple[float, float]]]:
+    if not degrees:
+        return polylines
+    return [[_rotate_point(point, degrees) for point in polyline] for polyline in polylines]
+
+
+def _point_to_segment_distance(
+    point: tuple[float, float],
+    segment: tuple[tuple[float, float], tuple[float, float]],
+) -> float:
+    first, second = segment
+    dx = second[0] - first[0]
+    dy = second[1] - first[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0:
+        return math.hypot(point[0] - first[0], point[1] - first[1])
+    ratio = max(0.0, min(1.0, ((point[0] - first[0]) * dx + (point[1] - first[1]) * dy) / length_sq))
+    projected = (first[0] + dx * ratio, first[1] + dy * ratio)
+    return math.hypot(point[0] - projected[0], point[1] - projected[1])
+
+
+def _average_nearest_segment_distance(
+    points: list[tuple[float, float]],
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> float:
+    if not points or not segments:
+        return 1.0
+    return sum(min(_point_to_segment_distance(point, segment) for segment in segments) for point in points) / len(points)
+
+
+def _patch_distance(query_polylines: list[list[tuple[float, float]]], candidate_polylines: list[list[tuple[float, float]]]) -> float:
+    query_points = _sample_xy_polylines(query_polylines, PATCH_SAMPLE_POINTS)
+    candidate_points = _sample_xy_polylines(candidate_polylines, PATCH_SAMPLE_POINTS)
+    query_segments = _xy_segments(query_polylines)
+    candidate_segments = _xy_segments(candidate_polylines)
+    query_to_candidate = _average_nearest_segment_distance(query_points, candidate_segments)
+    candidate_to_query = _average_nearest_segment_distance(candidate_points, query_segments)
+    return (query_to_candidate * 0.65) + (candidate_to_query * 0.35)
+
+
+def _best_patch_distance(
+    query_polylines: list[list[tuple[float, float]]],
+    candidate_polylines: list[list[tuple[float, float]]],
+    rotation_invariant: bool,
+) -> float:
+    rotations = range(0, 360, PATCH_ROTATION_STEP_DEGREES) if rotation_invariant else (0,)
+    return min(_patch_distance(_rotate_polylines(query_polylines, rotation), candidate_polylines) for rotation in rotations)
+
+
+def _prepared_patch(polylines: list[list[tuple[float, float]]]) -> dict:
+    return {
+        "polylines": polylines,
+        "samples": _sample_xy_polylines(polylines, PATCH_SAMPLE_POINTS),
+        "segments": _xy_segments(polylines),
+    }
+
+
+def _prepared_query_rotations(
+    query_polylines: list[list[tuple[float, float]]],
+    rotation_invariant: bool,
+) -> list[dict]:
+    rotations = range(0, 360, PATCH_ROTATION_STEP_DEGREES) if rotation_invariant else (0,)
+    return [_prepared_patch(_rotate_polylines(query_polylines, rotation)) for rotation in rotations]
+
+
+def _patch_distance_prepared(query_patch: dict, candidate_patch: dict) -> float:
+    query_to_candidate = _average_nearest_segment_distance(query_patch["samples"], candidate_patch["segments"])
+    candidate_to_query = _average_nearest_segment_distance(candidate_patch["samples"], query_patch["segments"])
+    return (query_to_candidate * 0.65) + (candidate_to_query * 0.35)
+
+
+def _best_prepared_patch_distance(query_patches: list[dict], candidate_patch: dict) -> float:
+    return min(_patch_distance_prepared(query_patch, candidate_patch) for query_patch in query_patches)
+
+
 def build_road_pattern_index(data: dict) -> dict:
     elements = data.get("elements", [])
     nodes = {
@@ -272,17 +481,16 @@ def build_road_pattern_index(data: dict) -> dict:
             for neighbor_id in linked_nodes
         ]
         angles = [branch["angle"] for branch in branches]
-        candidates.append(
-            {
-                "id": node_id,
-                "coords": center,
-                "degree": len(angles),
-                "branches": branches,
-                "angles": angles,
-                "gaps": _relative_gaps(angles),
-                "roadTypes": sorted(road_types[node_id]),
-            }
-        )
+        candidate = {
+            "id": node_id,
+            "coords": center,
+            "degree": len(angles),
+            "branches": branches,
+            "angles": angles,
+            "gaps": _relative_gaps(angles),
+            "roadTypes": sorted(road_types[node_id]),
+        }
+        candidates.append(candidate)
 
     return {"intersections": candidates}
 
@@ -576,34 +784,42 @@ def _search_stroke_patterns(
     limit: int,
     allowed_groups: set[str] | None,
 ) -> dict:
+    query_patch = _stroke_patch_geometry(stroke_patterns)
+    if not query_patch:
+        return {
+            "pattern": {
+                "degree": 0,
+                "angles": [],
+                "branchTurns": [],
+                "mode": "network-patch",
+                "rotationInvariant": rotation_invariant,
+            },
+            "matches": [],
+        }
+
+    query_patches = _prepared_query_rotations(query_patch, rotation_invariant)
+    stroke_angles = _stroke_overall_angles(stroke_patterns)
     candidates = []
-    for item in index["intersections"]:
-        if not _candidate_allowed(item, allowed_groups):
+    candidate_items = [
+        item
+        for item in index["intersections"]
+        if _candidate_allowed(item, allowed_groups) and item["degree"] <= max(6, len(stroke_patterns) + 4)
+    ]
+    candidate_items.sort(key=lambda item: _cheap_stroke_candidate_priority(stroke_angles, item, rotation_invariant))
+
+    for item in candidate_items[:PATCH_CANDIDATE_LIMIT]:
+
+        candidate_patch = item.get("preparedPatch")
+        if not candidate_patch:
+            raw_patch = item.get("patch") or _candidate_patch_geometry(item)
+            candidate_patch = _prepared_patch(raw_patch)
+        if not candidate_patch:
             continue
 
-        candidate_paths = _candidate_trace_paths(item)
-        if not candidate_paths:
-            continue
-
-        total_penalty = 0.0
-        matched_paths = []
-        for stroke in stroke_patterns:
-            best_path = None
-            best_penalty = 100.0
-            for candidate_path in candidate_paths:
-                penalty = _polyline_distance(stroke, candidate_path, rotation_invariant)
-                if penalty < best_penalty:
-                    best_penalty = penalty
-                    best_path = candidate_path
-            total_penalty += best_penalty
-            if best_path:
-                matched_paths.append(best_path)
-
-        average_penalty = total_penalty / len(stroke_patterns)
-        length_penalty = _relative_length_penalty(stroke_patterns, matched_paths)
-        complexity_penalty = max(0, len(stroke_patterns) - len(matched_paths)) * 15
-        score = max(0.0, 100.0 - average_penalty - length_penalty - complexity_penalty)
-        if score < FREE_TRACE_MIN_SCORE:
+        patch_penalty = _best_prepared_patch_distance(query_patches, candidate_patch) * 180
+        stroke_count_penalty = abs(len(stroke_patterns) - item["degree"]) * 2.5
+        score = max(0.0, 100.0 - patch_penalty - stroke_count_penalty)
+        if score < PATCH_TRACE_MIN_SCORE:
             continue
 
         candidates.append(
@@ -615,7 +831,7 @@ def _search_stroke_patterns(
                 "roadTypes": item["roadTypes"],
                 "angles": [round(angle, 1) for angle in sorted(item["angles"])],
                 "branchTurns": [round(branch["turn"], 1) for branch in item["branches"]],
-                "paths": matched_paths,
+                "paths": [branch["coords"] for branch in item["branches"] if len(branch.get("coords", [])) >= 2],
             }
         )
 
@@ -625,7 +841,7 @@ def _search_stroke_patterns(
             "degree": len(stroke_patterns),
             "angles": [],
             "branchTurns": [],
-            "mode": "free-trace",
+            "mode": "network-patch",
             "rotationInvariant": rotation_invariant,
         },
         "matches": _dedupe_nearby_matches(candidates, limit),

@@ -33,10 +33,11 @@ Important behavior to preserve:
 - Road group filters are available for pattern matching: roads, highways, paths/tracks, and service roads.
 - Search results are ranked in a `Best matches` panel. Clicking a result zooms the map, highlights candidate paths, shows the score, and displays a Google Maps link with coordinates at the bottom of the window.
 - Current pattern engine has three modes:
-  - `free-trace`: used for current stroke-based UI input. Compares every drawn stroke as a full trace against OSM candidate paths.
+  - `network-patch`: used for current stroke-based UI input. Compares all drawn strokes globally against normalized local OSM road-network patches.
   - `linear-trace`: fallback for old single continuous point/edge drawings.
   - intersection/branch matching: fallback for old graph-style drawings.
-- `free-trace` compares trace angle/shape and relative stroke lengths. Relative length means ratios such as "this line is about 2x that line", not absolute meters.
+- `network-patch` normalizes query and candidate patches by translation/scale, tests coarse rotations when `Free rotation` is enabled, then scores with bidirectional nearest-segment distance.
+- Patch search is prefiltered by road group, branch count, and coarse stroke/candidate angles before running the heavier geometric score.
 - `Free rotation` compares relative branch angles so the pattern does not need to be north-aligned.
 - The web UI has a `Full map` mode that hides the control panel until the user reopens it.
 - Map road/area/point layers start unchecked; `Check all` and `Uncheck all` toggle them together.
@@ -46,15 +47,17 @@ Current dataset:
 - `osm_data.json` is now a Marseille dataset.
 - Older Cassis counts are obsolete. Recompute counts from the local `osm_data.json` before relying on element/layer totals.
 
-Current pattern-search status / blocker:
+Current pattern-search status:
+- A first backend rework now uses `network-patch` matching for strokes instead of independent per-stroke branch matching.
+- This partially addresses the previous blocker by comparing the full local geometry around each candidate.
+- Remaining limitation: candidates are still centered on OSM nodes/branches, not a full sliding-window over every road segment.
+
+Previous pattern-search blocker:
 - User ran 4 manual tests using exact route lines from the map.
 - Even with exact drawn route lines, the system returns candidates that look somewhat similar but does not find/rank the correct location.
 - This suggests the current candidate generation/scoring is structurally insufficient, not just a drawing UX issue.
 - Likely weak points:
   - Candidate generation is still centered around OSM intersection nodes and branch paths, so the correct path may not be included or scored in the right context.
-  - `free-trace` matches each drawn stroke independently to candidate branch/path shapes, then averages penalties. It does not yet solve a true global alignment over a local road-network patch.
-  - It does not yet compare the full local network geometry around a candidate with translation/scale/rotation alignment.
-  - It does not yet use a robust nearest-segment distance such as Chamfer/Hausdorff over normalized polylines.
   - It may need a sliding-window search along roads, not only candidate paths derived from intersections.
 - Next serious improvement should probably replace the candidate model with local road-network patch matching:
   1. Build normalized query geometry from all strokes.

@@ -804,7 +804,9 @@ WEB_APP_HTML = r"""<!doctype html>
       selectedPatternMatchIndex = -1;
       patternResultsPanelEl.classList.add('has-results');
       renderPatternResults();
-      if (results.pattern.mode === 'free-trace') {
+      if (results.pattern.mode === 'network-patch') {
+        patternStatusEl.textContent = `${results.matches.length} matches. Compared ${results.pattern.degree} drawn stroke(s) against local road-network patches.`;
+      } else if (results.pattern.mode === 'free-trace') {
         patternStatusEl.textContent = `${results.matches.length} matches. Compared ${results.pattern.degree} drawn stroke(s) as full traces.`;
       } else {
         patternStatusEl.textContent =
