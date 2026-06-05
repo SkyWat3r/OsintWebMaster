@@ -462,6 +462,9 @@ WEB_APP_HTML = r"""<!doctype html>
           <div class="row">
             <button id="undoPattern">Undo stroke</button>
             <button id="deletePatternPoint">Delete point</button>
+            <button id="addPatternMidpoint">Add midpoint</button>
+            <button id="smoothPatternStroke">Smooth curve</button>
+            <button id="straightPatternStroke">Straight corners</button>
             <button id="clearPattern">Clear</button>
             <button id="searchPattern">Search</button>
             <button id="focusPattern">Large drawing</button>
@@ -519,6 +522,7 @@ WEB_APP_HTML = r"""<!doctype html>
     let selectedPatternMatchIndex = -1;
     const enabledPointKinds = new Set();
     const patternStrokes = [];
+    const smoothPatternStrokes = new WeakSet();
 
     function matchesFilter(item) {
       const filter = filterEl.value.trim().toLowerCase();
@@ -665,7 +669,7 @@ WEB_APP_HTML = r"""<!doctype html>
       if (!selectedPatternPoint) return '';
       const stroke = selectedPatternPoint.stroke;
       const index = selectedPatternPoint.index;
-      const parts = [`point ${index + 1}/${stroke.length}`];
+      const parts = [`point ${index + 1}/${stroke.length}`, smoothPatternStrokes.has(stroke) ? 'smooth' : 'corners'];
       if (index > 0) {
         const previous = stroke[index - 1];
         const current = stroke[index];
@@ -677,6 +681,54 @@ WEB_APP_HTML = r"""<!doctype html>
         parts.push(`next ${segmentLengthPercent(current, next)}%, ${segmentAngle(current, next)}deg`);
       }
       return parts.join(' | ');
+    }
+
+    function activeEditableStroke() {
+      if (selectedPatternPoint) return selectedPatternPoint.stroke;
+      if (activeAngleStroke) return activeAngleStroke;
+      if (patternStrokes.length) return patternStrokes[patternStrokes.length - 1];
+      return null;
+    }
+
+    function drawSmoothStroke(stroke, viewport) {
+      if (stroke.length < 2) return;
+      patternCtx.beginPath();
+      patternCtx.moveTo(viewport.x + stroke[0].x * viewport.width, viewport.y + stroke[0].y * viewport.height);
+      for (let index = 1; index < stroke.length - 1; index++) {
+        const current = stroke[index];
+        const next = stroke[index + 1];
+        const controlX = viewport.x + current.x * viewport.width;
+        const controlY = viewport.y + current.y * viewport.height;
+        const endX = viewport.x + ((current.x + next.x) / 2) * viewport.width;
+        const endY = viewport.y + ((current.y + next.y) / 2) * viewport.height;
+        patternCtx.quadraticCurveTo(controlX, controlY, endX, endY);
+      }
+      const last = stroke[stroke.length - 1];
+      patternCtx.lineTo(viewport.x + last.x * viewport.width, viewport.y + last.y * viewport.height);
+      patternCtx.stroke();
+    }
+
+    function smoothStrokePoints(stroke) {
+      if (!smoothPatternStrokes.has(stroke) || stroke.length < 3) {
+        return stroke.map((point) => ({ x: point.x, y: point.y }));
+      }
+      const sampled = [{ x: stroke[0].x, y: stroke[0].y }];
+      for (let index = 1; index < stroke.length - 1; index++) {
+        const start = sampled[sampled.length - 1];
+        const control = stroke[index];
+        const next = stroke[index + 1];
+        const end = { x: (control.x + next.x) / 2, y: (control.y + next.y) / 2 };
+        for (let step = 1; step <= 6; step++) {
+          const t = step / 6;
+          const inv = 1 - t;
+          sampled.push({
+            x: inv * inv * start.x + 2 * inv * t * control.x + t * t * end.x,
+            y: inv * inv * start.y + 2 * inv * t * control.y + t * t * end.y
+          });
+        }
+      }
+      sampled.push({ x: stroke[stroke.length - 1].x, y: stroke[stroke.length - 1].y });
+      return sampled;
     }
 
     function drawPatternCanvas() {
@@ -708,12 +760,16 @@ WEB_APP_HTML = r"""<!doctype html>
       patternCtx.lineJoin = 'round';
       for (const stroke of patternStrokes) {
         if (stroke.length < 2) continue;
-        patternCtx.beginPath();
-        patternCtx.moveTo(viewport.x + stroke[0].x * viewport.width, viewport.y + stroke[0].y * viewport.height);
-        for (const point of stroke.slice(1)) {
-          patternCtx.lineTo(viewport.x + point.x * viewport.width, viewport.y + point.y * viewport.height);
+        if (smoothPatternStrokes.has(stroke)) {
+          drawSmoothStroke(stroke, viewport);
+        } else {
+          patternCtx.beginPath();
+          patternCtx.moveTo(viewport.x + stroke[0].x * viewport.width, viewport.y + stroke[0].y * viewport.height);
+          for (const point of stroke.slice(1)) {
+            patternCtx.lineTo(viewport.x + point.x * viewport.width, viewport.y + point.y * viewport.height);
+          }
+          patternCtx.stroke();
         }
-        patternCtx.stroke();
       }
       if (anglePointModeEl.checked) {
         patternCtx.lineWidth = 2;
@@ -795,6 +851,40 @@ WEB_APP_HTML = r"""<!doctype html>
       }
       selectedPatternPoint = null;
       draggedPatternPoint = null;
+      drawPatternCanvas();
+    }
+
+    function addPatternMidpoint() {
+      const stroke = activeEditableStroke();
+      if (!stroke || stroke.length < 2) {
+        patternStatusEl.textContent = 'Select or draw a line before adding a midpoint.';
+        return;
+      }
+      let insertAfter = selectedPatternPoint ? selectedPatternPoint.index : stroke.length - 2;
+      if (insertAfter >= stroke.length - 1) {
+        insertAfter = stroke.length - 2;
+      }
+      const first = stroke[insertAfter];
+      const second = stroke[insertAfter + 1];
+      const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+      stroke.splice(insertAfter + 1, 0, midpoint);
+      selectedPatternPoint = { stroke, index: insertAfter + 1, point: midpoint };
+      activeAngleStroke = stroke;
+      drawPatternCanvas();
+    }
+
+    function setStrokeSmooth(enabled) {
+      const stroke = activeEditableStroke();
+      if (!stroke) {
+        patternStatusEl.textContent = 'Select or draw a line before changing curve mode.';
+        return;
+      }
+      if (enabled) {
+        smoothPatternStrokes.add(stroke);
+      } else {
+        smoothPatternStrokes.delete(stroke);
+      }
+      activeAngleStroke = stroke;
       drawPatternCanvas();
     }
 
@@ -1000,7 +1090,7 @@ WEB_APP_HTML = r"""<!doctype html>
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          strokes: patternStrokes,
+          strokes: patternStrokes.map(smoothStrokePoints),
           rotationInvariant: freeRotationEl.checked,
           roadGroups
         })
@@ -1146,6 +1236,9 @@ WEB_APP_HTML = r"""<!doctype html>
     document.getElementById('undoPattern').addEventListener('click', undoPattern);
     document.getElementById('clearPattern').addEventListener('click', clearPattern);
     document.getElementById('finishAngleStroke').addEventListener('click', finishAngleStroke);
+    document.getElementById('addPatternMidpoint').addEventListener('click', addPatternMidpoint);
+    document.getElementById('smoothPatternStroke').addEventListener('click', () => setStrokeSmooth(true));
+    document.getElementById('straightPatternStroke').addEventListener('click', () => setStrokeSmooth(false));
     anglePointModeEl.addEventListener('change', () => {
       activeAngleStroke = null;
       selectedPatternPoint = null;

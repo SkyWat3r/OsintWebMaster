@@ -28,6 +28,8 @@ Important behavior to preserve:
 - The canvas supports freehand drawing and an `Angle points` mode similar to a pen/polyline tool.
 - `Angle points` lets the user click route vertices manually, then `Finish line` starts a separate stroke.
 - In `Angle points`, existing vertices can be selected/dragged, `Delete point` removes the selected vertex, and the status text shows adjacent segment length percentages and angles.
+- `Add midpoint`, `Smooth curve`, and `Straight corners` provide a lightweight vector-editor workflow for rounded roads without changing the API payload shape.
+- Smoothed strokes are rendered as quadratic curves and sampled into denser point lists before `/api/pattern-search`.
 - The UI no longer shows old black graph points during normal freehand drawing. Points still exist internally to encode strokes.
 - The pattern canvas stores normalized coordinates and uses a fixed internal 340:230 drawing viewport, so `Large drawing` should not stretch the trace.
 - `/api/pattern-search` accepts `strokes`, `roadGroups`, and `rotationInvariant`.
