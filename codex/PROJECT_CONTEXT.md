@@ -4,23 +4,23 @@ This project is a local OpenStreetMap OSINT explorer.
 
 Current architecture:
 - `main.py`: small entrypoint only.
-- `osint_app/app.py`: Tkinter control window, loading/fetching data, local server lifecycle.
+- `osint_app/app.py`: web-only local app service, map-data cache, pattern-search cache, local server lifecycle.
 - `osint_app/osm.py`: Overpass query, OSM JSON loading, tag classification, map payload generation.
 - `osint_app/pattern.py`: road graph indexing and drawn road-shape matching.
 - `osint_app/web.py`: localhost HTTP server, embedded Leaflet frontend, browser helpers, HTML export.
 - `osint_app/config.py`: constants, road colors, point-layer definitions.
 
 Runtime flow:
-1. `python main.py` starts the Tkinter controller.
-2. The controller starts a local server on `127.0.0.1:8765` or nearby.
+1. `python main.py` starts a local server on `127.0.0.1:8765` or nearby.
+2. The launcher opens the local web app in a browser when possible, then blocks until Ctrl+C.
 3. The web frontend calls `/api/map-data`.
 4. The API uses already-loaded data or auto-loads `osm_data.json` if available.
-5. Overpass is only called when the user clicks `Fetch OSM data`.
+5. Overpass fetch is web-driven via `/api/fetch-osm`; fetched data is cached in memory and written to `osm_data.json`.
 6. Pattern search calls `/api/pattern-search` with drawn strokes or explicit graph points/edges, road-type filters, and rotation options.
 
 Important behavior to preserve:
 - Do not re-fetch Overpass data when `osm_data.json` is already usable.
-- `Open Map` should open/copy the localhost URL, not generate a beige Tkinter canvas map.
+- The app should stay web-first. Do not reintroduce a Tkinter control window; add controls to the Leaflet web UI instead.
 - The web map must use real OSM tiles through Leaflet.
 - Point filters are classified by OSM tags. Gates are `barrier=gate/lift_gate/swing_gate/...` and use the `▥` symbol.
 - Google Maps links are generated client-side from feature coordinates.
@@ -59,9 +59,11 @@ Important behavior to preserve:
 - Map rotation increases tile/canvas render buffer and runs a symmetric overscan pan refresh to reduce blank corners after rotating. It is still a visual Leaflet workaround, not a native rotated-map projection.
 - Rotation must be applied to Leaflet's whole `mapPane` while preserving Leaflet's own translate transform; rotating individual panes made rotation originate from the top-left and caused bad zoom behavior.
 - `Map tools` includes a GPS jump field accepting `lat, lon`, a `Go` button, and a marker popup with a Google Maps link.
-- Fetching data stores `_fetch_area` (`lat`, `lon`, `radius`) in memory and in saved JSON if the user saves after fetch. `build_map_payload()` exposes this as `fetchArea`.
-- `Show border` is a visual-only circle for `fetchArea`, not a data limiter. `Set border` lets the user manually set a visual circle from the GPS field plus radius input.
+- `Map tools` also includes web fetch controls: `Pick center`, `Use map center`, radius input, and `Fetch OSM data`.
+- Fetching data through `/api/fetch-osm` stores `_fetch_area` (`lat`, `lon`, `radius`) in memory and writes the full Overpass JSON to `osm_data.json`. `build_map_payload()` exposes this as `fetchArea`.
+- `Show border` is a visual circle for `fetchArea`. `Set border` lets the user manually set a visual circle from the GPS field plus radius input without fetching.
 - The main `OSM Pattern Explorer` panel is organized into collapsible sections: `Map tools`, `Filters`, `Road search`, and `Selection details`. Keep future controls inside the relevant section instead of adding loose buttons at the top level.
+- The panel starts with all collapsible sections closed and all checkboxes unchecked. Preserve this launch state unless the user explicitly asks for defaults to be enabled.
 - Point filters are grouped by `POINT_KINDS[*].group`; the first dedicated group is `Signs` for stop/give-way/crossing/traffic-sign/traffic-calming style OSM nodes. Filter and marker icons can use Mapbox Maki SVG names via the `maki` field.
 - `Nearby match` finds clusters of selected point kinds and/or text searches within a radius. Text terms are split on comma, plus sign, or newline (for example `boucherie + presse`). The `At least` value counts all selected criteria; users should uncheck point-kind criteria if they want text-only matching.
 - Nearby matching starts from the rarest criterion in each combination and uses a simple spatial grid plus OSM point IDs for dedupe.
@@ -114,7 +116,7 @@ Alternative hypothesis: stronger vector-style drawing editor:
   - Best path may be to combine this with local road-network patch matching: better query editor first, then stronger backend scoring.
 
 Development notes:
-- Keep the app dependency-light: Python stdlib + Tkinter + browser-side Leaflet from CDN.
+- Keep the app dependency-light: Python stdlib local HTTP server + browser-side Leaflet from CDN.
 - For UI map changes, edit `WEB_APP_HTML` in `osint_app/web.py`.
 - For new OSINT layers/categories, edit `POINT_KINDS` in `osint_app/config.py` and `point_kind()` in `osint_app/osm.py`.
 - For pattern matching changes, edit `osint_app/pattern.py` and the Pattern Search UI/API in `osint_app/web.py`.

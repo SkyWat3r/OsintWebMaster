@@ -70,53 +70,174 @@ def element_category(element: dict) -> str:
 
 def point_kind(tags: dict) -> str:
     barrier = tags.get("barrier")
-    if tags.get("highway") == "stop":
-        return "stop"
-    if tags.get("highway") == "give_way":
-        return "give_way"
-    if tags.get("highway") == "crossing":
-        return "crossing"
-    if tags.get("highway") == "traffic_signals":
-        return "traffic_signals"
-    if tags.get("highway") == "turning_circle":
+    amenity = tags.get("amenity")
+    building = tags.get("building")
+    highway = tags.get("highway")
+    historic = tags.get("historic")
+    leisure = tags.get("leisure")
+    natural = tags.get("natural")
+    public_transport = tags.get("public_transport")
+    railway = tags.get("railway")
+    shop = tags.get("shop")
+    tourism = tags.get("tourism")
+
+    if barrier in {"bollard", "block", "cycle_barrier", "jersey_barrier"}:
+        return "bollard"
+    if barrier in {"gate", "lift_gate", "swing_gate", "kissing_gate", "sliding_gate"}:
+        return "gate"
+    if tags.get("entrance"):
+        return "entrance"
+    if tags.get("man_made") == "surveillance" or tags.get("surveillance"):
+        return "surveillance"
+    if barrier:
+        return "barrier"
+
+    if amenity == "atm":
+        return "atm"
+    if amenity == "bank":
+        return "bank"
+    if shop == "bakery":
+        return "bakery"
+    if shop == "butcher":
+        return "butcher"
+    if amenity in {"cafe", "bar", "pub"}:
+        return "cafe"
+    if amenity == "fast_food":
+        return "fast_food"
+    if amenity == "pharmacy":
+        return "pharmacy"
+    if amenity == "post_office":
+        return "post_office"
+    if amenity == "restaurant":
+        return "restaurant"
+    if amenity in {"school", "kindergarten", "college", "university"}:
+        return "school"
+    if amenity == "townhall" or tags.get("office") == "government":
+        return "townhall"
+    if amenity == "toilets":
+        return "toilets"
+
+    if emergency := tags.get("emergency"):
+        if emergency == "defibrillator":
+            return "defibrillator"
+        if emergency in {"phone", "emergency_phone"}:
+            return "emergency_phone"
+        return "emergency"
+    if amenity == "fire_station":
+        return "fire_station"
+    if amenity in {"hospital", "clinic", "doctors"}:
+        return "hospital"
+    if amenity == "police":
+        return "police"
+    if tags.get("boundary"):
+        return "boundary"
+
+    if natural == "beach":
+        return "beach"
+    if leisure == "garden":
+        return "garden"
+    if leisure == "park":
+        return "park"
+    if leisure == "playground":
+        return "playground"
+    if leisure in {"pitch", "sports_centre", "stadium"}:
+        return "sports_pitch"
+    if leisure == "swimming_pool":
+        return "swimming_pool"
+    if tags.get("waterway") or natural in {"water", "bay", "strait", "spring"}:
+        return "water"
+    if natural or leisure in {"common", "dog_park", "nature_reserve"}:
+        return "nature"
+
+    if highway == "turning_circle":
         return "turning_circle"
-    if tags.get("highway") == "speed_camera" or tags.get("enforcement") in {"maxspeed", "traffic_signals"}:
+
+    if shop in {"books", "bookmaker"}:
+        return "books"
+    if shop in {"clothes", "fashion", "shoes"}:
+        return "clothes"
+    if shop in {"convenience", "deli", "greengrocer"}:
+        return "convenience"
+    if shop in {"fishmonger", "seafood"}:
+        return "fishmonger"
+    if shop in {"kiosk", "newsagent"}:
+        return "kiosk"
+    if shop in {"supermarket", "grocery"}:
+        return "supermarket"
+    if shop == "tobacco":
+        return "tobacco"
+    if shop:
+        return "shop"
+
+    if highway == "stop":
+        return "stop"
+    if highway == "give_way":
+        return "give_way"
+    if highway == "crossing":
+        return "crossing"
+    if highway == "traffic_signals":
+        return "traffic_signals"
+    if highway == "speed_camera" or tags.get("enforcement") in {"maxspeed", "traffic_signals"}:
         return "speed_camera"
     if tags.get("traffic_calming"):
         return "traffic_calming"
     if tags.get("traffic_sign"):
         return "traffic_sign"
-    if barrier in {"gate", "lift_gate", "swing_gate", "kissing_gate", "sliding_gate"}:
-        return "gate"
-    if barrier:
-        return "barrier"
-    if tags.get("man_made") == "surveillance" or tags.get("surveillance"):
-        return "surveillance"
-    if tags.get("amenity") in {"parking", "parking_entrance", "bicycle_parking", "motorcycle_parking"}:
-        return "parking"
-    if tags.get("amenity") in {"restaurant", "cafe", "bar", "fast_food", "pub"}:
-        return "food"
-    if tags.get("highway") in {"bus_stop", "platform"} or tags.get("public_transport") or tags.get("railway"):
-        return "transport"
-    if tags.get("tourism") or tags.get("historic"):
+
+    if tags.get("bridge"):
+        return "bridge"
+    if building in {"garage", "garages"}:
+        return "garage"
+    if amenity in {"parking", "parking_entrance"} and building:
+        return "parking_structure"
+    if amenity == "place_of_worship":
+        return "place_of_worship"
+    if building in {"civic", "public", "government", "school", "university", "college", "hospital"}:
+        return "public_building"
+    if building in {"apartments", "detached", "dormitory", "house", "residential", "semidetached_house", "terrace"}:
+        return "residential_building"
+    if tags.get("tunnel"):
+        return "tunnel"
+
+    if tourism in {"hotel", "hostel", "guest_house", "apartment"}:
+        return "hotel"
+    if tourism == "information":
+        return "information"
+    if historic in {"monument", "memorial"}:
+        return "monument"
+    if tourism == "museum":
+        return "museum"
+    if tourism == "viewpoint":
+        return "viewpoint"
+    if tourism or historic:
         return "tourism"
-    if tags.get("emergency"):
-        return "emergency"
-    if tags.get("entrance"):
-        return "entrance"
-    if tags.get("waterway"):
-        return "water"
-    if tags.get("boundary"):
-        return "boundary"
-    if tags.get("man_made") or tags.get("building"):
+
+    if amenity in {"bicycle_parking", "motorcycle_parking"}:
+        return "bicycle_parking"
+    if highway == "bus_stop" or (public_transport == "platform" and tags.get("bus") == "yes"):
+        return "bus_stop"
+    if amenity == "fuel":
+        return "fuel"
+    if railway == "subway_entrance" or tags.get("station") == "subway" or tags.get("subway") == "yes":
+        return "metro"
+    if amenity in {"parking", "parking_entrance"}:
+        return "parking"
+    if railway in {"station", "halt"} or public_transport == "station":
+        return "rail_station"
+    if amenity == "taxi":
+        return "taxi"
+    if railway == "tram_stop" or tags.get("tram") == "yes":
+        return "tram_stop"
+    if highway == "platform" or public_transport or railway:
+        return "transport"
+
+    if tags.get("man_made") or building:
         return "structure"
-    if tags.get("natural") or tags.get("leisure") in {"park", "pitch", "swimming_pool", "garden"}:
-        return "nature"
     if tags.get("addr:housenumber") or tags.get("addr:street"):
         return "address"
-    if tags.get("highway"):
+    if highway:
         return "road_node"
-    if tags.get("amenity") or tags.get("shop") or tags.get("office") or tags.get("craft"):
+    if amenity or tags.get("office") or tags.get("craft"):
         return "amenity"
     return "other"
 

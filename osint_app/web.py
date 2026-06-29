@@ -214,15 +214,11 @@ WEB_APP_HTML = r"""<!doctype html>
     }
     #mapRotationControls {
       display: none;
-      flex-basis: 100%;
       gap: 8px;
       align-items: center;
     }
-    #mapRotationControls.active {
-      display: flex;
-    }
     #mapRotation {
-      width: 150px;
+      width: 100%;
     }
     #map.rotate-drag-enabled {
       cursor: crosshair;
@@ -232,7 +228,8 @@ WEB_APP_HTML = r"""<!doctype html>
       top: 12px;
       right: 12px;
       z-index: 1000;
-      width: 370px;
+      width: clamp(420px, 22vw, 520px);
+      max-width: calc(100% - 24px);
       max-height: calc(100% - 24px);
       box-sizing: border-box;
       overflow: auto;
@@ -483,15 +480,35 @@ WEB_APP_HTML = r"""<!doctype html>
       width: 100%;
       box-sizing: border-box;
     }
+    .map-tool-grid,
+    .fetch-action-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+      margin: 8px 0;
+    }
+    .map-tool-grid button,
+    .fetch-action-grid button {
+      width: 100%;
+      min-height: 32px;
+    }
     .coord-row {
-      display: flex;
-      gap: 6px;
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(110px, 0.8fr);
+      gap: 8px;
       margin-top: 8px;
     }
     .coord-row input {
-      flex: 1;
+      width: 100%;
       min-width: 0;
       box-sizing: border-box;
+      padding: 7px;
+    }
+    #mapRotationControls {
+      grid-template-columns: minmax(0, 1fr) 72px;
+    }
+    #mapRotationControls.active {
+      display: grid;
     }
     #nearbyStatus {
       margin-top: 6px;
@@ -544,9 +561,9 @@ WEB_APP_HTML = r"""<!doctype html>
   <div id="panel">
     <h1>OSM Pattern Explorer</h1>
     <div id="status" class="stat">Loading local API data...</div>
-    <details class="panel-section" id="mapToolsSection" open>
+    <details class="panel-section" id="mapToolsSection">
       <summary>Map tools</summary>
-      <div class="tool-row">
+      <div class="map-tool-grid">
         <button id="fit">Fit</button>
         <button id="toggleDataBorder">Show border</button>
         <button id="focusMap">Full map</button>
@@ -554,9 +571,14 @@ WEB_APP_HTML = r"""<!doctype html>
       </div>
       <div class="coord-row">
         <input id="gpsSearch" type="text" placeholder="48.866669, 2.333330">
-        <input id="borderRadius" type="number" min="1" step="1" value="4000" title="Border radius in meters">
+        <input id="borderRadius" type="number" min="1" max="50000" step="1" value="3000" title="Radius in meters">
+      </div>
+      <div class="fetch-action-grid">
         <button id="goGps">Go</button>
         <button id="setDataBorder">Set border</button>
+        <button id="pickFetchCenter">Pick center</button>
+        <button id="useMapCenter">Use map center</button>
+        <button id="fetchOsmData">Fetch OSM data</button>
       </div>
       <div id="mapRotationControls">
         <input id="mapRotation" type="range" min="0" max="359" step="1" value="0">
@@ -565,7 +587,7 @@ WEB_APP_HTML = r"""<!doctype html>
         <button id="resetMapRotation">Reset rotation</button>
       </div>
     </details>
-    <details class="panel-section" id="filtersSection" open>
+    <details class="panel-section" id="filtersSection">
       <summary>Filters</summary>
       <input id="filter" type="text" placeholder="Filter names, tags, road types">
       <div class="tool-row">
@@ -579,7 +601,7 @@ WEB_APP_HTML = r"""<!doctype html>
       <div class="stat">Point layers</div>
       <div id="pointFilters"></div>
     </details>
-    <details class="panel-section section" id="nearbySearchSection" open>
+    <details class="panel-section section" id="nearbySearchSection">
       <summary>Nearby match</summary>
       <div class="stat">Find places where selected point types appear close together.</div>
       <input id="nearbyTerms" type="text" placeholder="Text searches: boucherie, presse">
@@ -594,13 +616,13 @@ WEB_APP_HTML = r"""<!doctype html>
       </div>
       <div id="nearbyStatus" class="stat">Select point types, then search.</div>
     </details>
-    <details class="panel-section section" id="roadSearchSection" open>
+    <details class="panel-section section" id="roadSearchSection">
       <summary>Road search</summary>
       <div class="road-group-grid">
-        <label><input type="checkbox" data-road-group="roads" checked> Roads</label>
-        <label><input type="checkbox" data-road-group="highways" checked> Highways</label>
-        <label><input type="checkbox" data-road-group="paths" checked> Paths / tracks</label>
-        <label><input type="checkbox" data-road-group="service" checked> Service roads</label>
+        <label><input type="checkbox" data-road-group="roads"> Roads</label>
+        <label><input type="checkbox" data-road-group="highways"> Highways</label>
+        <label><input type="checkbox" data-road-group="paths"> Paths / tracks</label>
+        <label><input type="checkbox" data-road-group="service"> Service roads</label>
       </div>
       <div class="pattern-layout">
         <div class="pattern-results-panel" id="patternResultsPanel">
@@ -627,7 +649,7 @@ WEB_APP_HTML = r"""<!doctype html>
           <div class="option-row">
             <label><input id="anglePointMode" type="checkbox"> Angle points</label>
             <label><input id="intersectionMode" type="checkbox"> Intersection</label>
-            <label><input id="freeRotation" type="checkbox" checked> Free rotation</label>
+            <label><input id="freeRotation" type="checkbox"> Free rotation</label>
             <label><input id="preciseRotation" type="checkbox"> 10 deg rotation (slow)</label>
           </div>
           <div class="tool-row">
@@ -649,10 +671,10 @@ WEB_APP_HTML = r"""<!doctype html>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const map = L.map('map', { preferCanvas: true });
-    const renderer = L.canvas({ padding: 2.5 });
+    const renderer = L.canvas({ padding: 0.5 });
     const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      keepBuffer: 14,
+      keepBuffer: 2,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
@@ -661,6 +683,8 @@ WEB_APP_HTML = r"""<!doctype html>
     const filterEl = document.getElementById('filter');
     const gpsSearchEl = document.getElementById('gpsSearch');
     const borderRadiusEl = document.getElementById('borderRadius');
+    const pickFetchCenterEl = document.getElementById('pickFetchCenter');
+    const fetchOsmDataEl = document.getElementById('fetchOsmData');
     const roadsEl = document.getElementById('roads');
     const areasEl = document.getElementById('areas');
     const mapEl = document.getElementById('map');
@@ -712,6 +736,7 @@ WEB_APP_HTML = r"""<!doctype html>
     let isDraggingMapRotation = false;
     let mapRotationDragOffset = 0;
     let visualBorder = null;
+    let isPickingFetchCenter = false;
     const leafletSetTransform = L.DomUtil.setTransform;
     L.DomUtil.setTransform = function patchedSetTransform(element, offset, scale) {
       leafletSetTransform.call(this, element, offset, scale);
@@ -1670,7 +1695,14 @@ WEB_APP_HTML = r"""<!doctype html>
     function applyMapPaneRotation() {
       if (!map._mapPane) return;
       const rotation = currentMapRotation();
+      mapEl.classList.toggle('map-rotated', rotation !== 0);
       const baseTransform = baseMapPaneTransform();
+      if (!rotation) {
+        if (map._mapPane.style.transform !== baseTransform) {
+          map._mapPane.style.transform = baseTransform;
+        }
+        return;
+      }
       const panePosition = map._getMapPanePos ? map._getMapPanePos() : L.DomUtil.getPosition(map._mapPane);
       const size = map.getSize();
       const originX = size.x / 2 - panePosition.x;
@@ -1680,7 +1712,6 @@ WEB_APP_HTML = r"""<!doctype html>
       map._mapPane.style.transform = rotation
         ? `${baseTransform} rotate(${rotation}deg)`.trim()
         : baseTransform;
-      mapEl.classList.toggle('map-rotated', rotation !== 0);
     }
 
     function refreshRotationTiles() {
@@ -1711,6 +1742,7 @@ WEB_APP_HTML = r"""<!doctype html>
     function setMapRotationControls(enabled) {
       mapRotationControlsEl.classList.toggle('active', enabled);
       document.getElementById('toggleMapRotation').textContent = enabled ? 'Hide rotation' : 'Rotate map';
+      tileLayer.options.keepBuffer = enabled ? 8 : 2;
       if (enabled) {
         setTimeout(refreshRotationTiles, 0);
       }
@@ -1924,10 +1956,16 @@ WEB_APP_HTML = r"""<!doctype html>
         groups[group].push([kind, meta, count]);
       }
 
-      for (const [group, entries] of Object.entries(groups)) {
+      const groupNames = Object.keys(groups).sort((a, b) => {
+        if (a === 'Other') return 1;
+        if (b === 'Other') return -1;
+        return a.localeCompare(b);
+      });
+
+      for (const group of groupNames) {
+        const entries = groups[group].sort((a, b) => a[1].label.localeCompare(b[1].label));
         const section = document.createElement('details');
         section.className = 'point-filter-group';
-        section.open = group === 'Signs';
         const total = entries.reduce((sum, entry) => sum + entry[2], 0);
         const summary = document.createElement('summary');
         summary.textContent = `${group} (${total.toLocaleString()})`;
@@ -1955,14 +1993,17 @@ WEB_APP_HTML = r"""<!doctype html>
 
     function buildNearbyFilters() {
       nearbyKindOptionsEl.innerHTML = '';
-      const defaultKinds = new Set(['traffic_sign', 'traffic_signals', 'speed_camera']);
-      for (const [kind, meta] of Object.entries(payload.pointKinds || {})) {
+      const entries = Object.entries(payload.pointKinds || {}).sort((a, b) => {
+        const groupCompare = (a[1].group || 'Other').localeCompare(b[1].group || 'Other');
+        if (groupCompare) return groupCompare;
+        return a[1].label.localeCompare(b[1].label);
+      });
+      for (const [kind, meta] of entries) {
         const count = payload.stats.pointKinds[kind] || 0;
         if (!count) continue;
         const label = document.createElement('label');
         label.title = `${meta.label}: ${count.toLocaleString()} points`;
-        const checked = defaultKinds.has(kind) ? ' checked' : '';
-        label.innerHTML = `<input type="checkbox" data-nearby-kind="${escapeHtml(kind)}"${checked}> `
+        label.innerHTML = `<input type="checkbox" data-nearby-kind="${escapeHtml(kind)}"> `
           + layerIconHtml(meta)
           + `${escapeHtml(meta.label)} (${count.toLocaleString()})`;
         label.querySelector('input').addEventListener('change', clampNearbyMinimum);
@@ -2320,6 +2361,82 @@ WEB_APP_HTML = r"""<!doctype html>
       statusEl.textContent = `Visual border set at ${center[0].toFixed(6)}, ${center[1].toFixed(6)} with ${radius.toLocaleString()} m radius.`;
     }
 
+    function selectedFetchRadius() {
+      const radius = Number.parseInt(borderRadiusEl.value, 10);
+      if (!Number.isFinite(radius) || radius < 1 || radius > 50000) {
+        statusEl.textContent = 'Radius must be between 1 and 50000 meters.';
+        return null;
+      }
+      return radius;
+    }
+
+    function setFetchCenter(center, label = 'Selected fetch area') {
+      const radius = selectedFetchRadius();
+      if (!radius) return;
+      gpsSearchEl.value = `${center[0].toFixed(6)}, ${center[1].toFixed(6)}`;
+      setVisualBorder(center, radius, label);
+      statusEl.textContent = `Fetch center set at ${center[0].toFixed(6)}, ${center[1].toFixed(6)} with ${radius.toLocaleString()} m radius.`;
+    }
+
+    function setFetchCenterFromMapCenter() {
+      const center = map.getCenter();
+      setFetchCenter([center.lat, center.lng], 'Selected fetch area');
+    }
+
+    function setPickingFetchCenter(enabled) {
+      isPickingFetchCenter = enabled;
+      pickFetchCenterEl.textContent = enabled ? 'Cancel pick' : 'Pick center';
+      mapEl.style.cursor = enabled ? 'crosshair' : '';
+      statusEl.textContent = enabled
+        ? 'Click the map to choose the Overpass fetch center.'
+        : 'Fetch center picking cancelled.';
+    }
+
+    async function fetchOsmDataFromWeb() {
+      const center = parseGpsSearch();
+      const radius = selectedFetchRadius();
+      if (!center || !radius) {
+        statusEl.textContent = 'Choose a center and radius before fetching OSM data.';
+        return;
+      }
+      fetchOsmDataEl.disabled = true;
+      statusEl.textContent = `Fetching OSM data around ${center[0].toFixed(6)}, ${center[1].toFixed(6)} (${radius.toLocaleString()} m)...`;
+      try {
+        const response = await fetch('/api/fetch-osm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: center[0], lon: center[1], radius })
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        payload = await response.json();
+        buildPointFilters();
+        buildNearbyFilters();
+        clearLayers();
+        patternResultsLayer.clearLayers();
+        devRoadSelectionLayer.clearLayers();
+        nearbyResultsLayer.clearLayers();
+        selectedDevRoad = null;
+        lastRoadCompareExport = null;
+        patternMatches = [];
+        selectedPatternMatchIndex = -1;
+        patternResultsPanelEl.classList.remove('has-results');
+        patternResultsEl.textContent = 'Launch a search to rank matches.';
+        showFetchDataBorder();
+        redraw();
+        statusEl.innerHTML =
+          `${payload.stats.elements.toLocaleString()} OSM elements fetched<br>` +
+          `${payload.stats.roads.toLocaleString()} roads, ` +
+          `${payload.stats.areas.toLocaleString()} areas, ` +
+          `${payload.stats.points.toLocaleString()} points`;
+      } catch (error) {
+        statusEl.textContent = `Fetch failed: ${error.message}`;
+      } finally {
+        fetchOsmDataEl.disabled = false;
+      }
+    }
+
     function showFetchDataBorder() {
       if (!payload || !payload.fetchArea) return false;
       const area = payload.fetchArea;
@@ -2366,6 +2483,20 @@ WEB_APP_HTML = r"""<!doctype html>
     document.getElementById('setDataBorder').addEventListener('click', setManualDataBorder);
     document.getElementById('focusMap').addEventListener('click', () => setMapFocus(true));
     document.getElementById('goGps').addEventListener('click', goToGpsSearch);
+    pickFetchCenterEl.addEventListener('click', () => setPickingFetchCenter(!isPickingFetchCenter));
+    document.getElementById('useMapCenter').addEventListener('click', setFetchCenterFromMapCenter);
+    fetchOsmDataEl.addEventListener('click', fetchOsmDataFromWeb);
+    borderRadiusEl.addEventListener('change', () => {
+      const center = parseGpsSearch();
+      if (center) {
+        setVisualBorder(center, selectedFetchRadius() || 1, 'Selected fetch area');
+      }
+    });
+    map.on('click', (event) => {
+      if (!isPickingFetchCenter) return;
+      setFetchCenter([event.latlng.lat, event.latlng.lng], 'Selected fetch area');
+      setPickingFetchCenter(false);
+    });
     gpsSearchEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         goToGpsSearch();
@@ -2524,7 +2655,7 @@ class LocalApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path != "/api/pattern-search":
+        if path not in {"/api/pattern-search", "/api/fetch-osm"}:
             self.send_error_text("Not found", 404)
             return
 
@@ -2532,6 +2663,15 @@ class LocalApiHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0"))
             request_body = self.rfile.read(content_length)
             request_json = json.loads(request_body.decode("utf-8"))
+            if path == "/api/fetch-osm":
+                result = self.app.fetch_osm_area(
+                    float(request_json.get("lat")),
+                    float(request_json.get("lon")),
+                    int(request_json.get("radius")),
+                )
+                self.send_json(result)
+                return
+
             result = self.app.search_pattern(
                 {
                     "points": request_json.get("points", []),
